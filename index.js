@@ -6,16 +6,18 @@ const { BrowserService } = require('./src/browserService');
 const { OAuthService } = require('./src/oauthService');
 const { generateRandomName, generateRandomPassword } = require('./src/randomIdentity');
 const config = require('./src/config');
+const { shouldAllowXvfb, shouldBlockXvfbRuntime } = require('./src/runtimeEnvironment');
 
 // command line args
 const args = process.argv.slice(2);
 const PHASE2_ONLY = args.includes('--phase2');
 const PHASE8_ONLY = args.includes('--phase8');
 const TARGET_COUNT = parseInt(args.find(a => /^\d+$/.test(a)) || '1', 10);
-const ACCOUNTS_FILE = path.join(process.cwd(), 'accounts.json');
-const USERNAME_FILE = path.join(process.cwd(), 'username.json');
-const SHIBAI_FILE = path.join(process.cwd(), 'shibai.json');
-const TOKEN_OUTPUT_DIR = config.tokenOutputDir || path.join(process.cwd(), 'tokens');
+const DATA_DIR = config.dataDir || process.cwd();
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const USERNAME_FILE = path.join(DATA_DIR, 'username.json');
+const SHIBAI_FILE = path.join(DATA_DIR, 'shibai.json');
+const TOKEN_OUTPUT_DIR = config.tokenOutputDir || path.join(DATA_DIR, 'tokens');
 const SMS_POLL_INTERVAL = 5000;
 const SMS_MAX_ATTEMPTS = 60; // 60 * 5s = 5 min
 const PHASE8_ACCOUNT_DELAY_MS = 60 * 1000;
@@ -52,18 +54,23 @@ function assertNotRunningWithXvfb() {
     const parentCmd = readCmdlineByPid(process.ppid);
     const grandParentPid = getParentPid(process.ppid);
     const grandParentCmd = readCmdlineByPid(grandParentPid);
-    const xauthority = String(process.env.XAUTHORITY || '').toLowerCase();
-    const display = String(process.env.DISPLAY || '').toLowerCase();
-
-    const hit =
-        /\bxvfb-run\b/.test(parentCmd) ||
-        /\bxvfb-run\b/.test(grandParentCmd) ||
-        xauthority.includes('xvfb-run') ||
-        display.includes('xvfb');
+    const allowXvfb = shouldAllowXvfb();
+    const hit = shouldBlockXvfbRuntime({
+        platform: process.platform,
+        parentCmd,
+        grandParentCmd,
+        xauthority: process.env.XAUTHORITY,
+        display: process.env.DISPLAY,
+        allowXvfb,
+    });
 
     if (hit) {
-        throw new Error('禁止使用 xvfb 运行项目。请在远程桌面图形会话中直接执行: node index.js');
+        throw new Error('禁止使用 xvfb 运行项目。容器内请设置 ALLOW_XVFB=1 或在 Docker 中运行。');
     }
+}
+
+function ensureParentDir(filePath) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
 /**
@@ -213,6 +220,7 @@ function readJsonArray(filePath) {
 function appendToJsonArrayFile(filePath, item) {
     const list = readJsonArray(filePath);
     list.push(item);
+    ensureParentDir(filePath);
     fs.writeFileSync(filePath, JSON.stringify(list, null, 2));
     return list.length;
 }
@@ -243,8 +251,9 @@ function saveAccount(phone, password, name, birthDate) {
         createdAt: new Date().toISOString(),
         status: 'registered',
     });
+    ensureParentDir(ACCOUNTS_FILE);
     fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
-    console.log(`[账号] 已保存到 accounts.json (共 ${accounts.length} 个)`);
+    console.log(`[账号] 已保存到 ${ACCOUNTS_FILE} (共 ${accounts.length} 个)`);
 }
 
 /**
@@ -276,6 +285,7 @@ function updateAccountStatus(phone, status) {
     const account = accounts.find(a => a.phone === phone);
     if (account) {
         account.status = status;
+        ensureParentDir(ACCOUNTS_FILE);
         fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
     }
 }
@@ -307,6 +317,7 @@ function saveUsernameFile({ email, phone, password, name, birthDate, status }) {
     }
 
     usernameList.push(outData);
+    ensureParentDir(USERNAME_FILE);
     fs.writeFileSync(USERNAME_FILE, JSON.stringify(usernameList, null, 2));
     console.log(`[账号] 已追加保存账户信息: ${USERNAME_FILE} (共 ${usernameList.length} 条)`);
 }

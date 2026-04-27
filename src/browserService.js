@@ -1,5 +1,13 @@
 const { connect } = require('puppeteer-real-browser');
 const config = require('./config');
+const { resolveBrowserExecutablePath } = require('./runtimeEnvironment');
+const { UI_TEXT, includesAnyText } = require('./uiText');
+const {
+    BROWSER_ACCEPT_LANGUAGE,
+    BROWSER_LOCALE,
+    BROWSER_TIMEZONE,
+    getBrowserPreferenceScript,
+} = require('./browserPreferences');
 
 const SLEEP = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -9,8 +17,11 @@ class BrowserService {
         this.page = null;
         this.proxy = proxy; // { host, port, username, password }
         this.browserOptions = {
-            useEdge: browserOptions.useEdge ?? config.useEdge,
-            edgePath: browserOptions.edgePath || config.edgePath,
+            browserPath: resolveBrowserExecutablePath({
+                chromePath: browserOptions.chromePath || config.chromePath,
+                browserPath: browserOptions.browserPath,
+                edgePath: browserOptions.edgePath || config.edgePath,
+            }),
         };
     }
 
@@ -21,19 +32,18 @@ class BrowserService {
         const connectOptions = {
             headless: false,
             turnstile: true,
-            args: ['--no-sandbox', '--disable-gpu'],
+            args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', `--lang=${BROWSER_LOCALE}`],
         };
 
-        // 使用 Edge 浏览器
-        if (this.browserOptions.useEdge && this.browserOptions.edgePath) {
+        if (this.browserOptions.browserPath) {
             // puppeteer-real-browser 底层使用 chrome-launcher，需通过 customConfig.chromePath 指定路径
             connectOptions.customConfig = {
                 ...(connectOptions.customConfig || {}),
-                chromePath: this.browserOptions.edgePath,
+                chromePath: this.browserOptions.browserPath,
             };
             // 兜底：部分 chrome-launcher 版本会读取 CHROME_PATH
-            process.env.CHROME_PATH = this.browserOptions.edgePath;
-            console.log(`[Browser] 使用 Edge 浏览器: ${this.browserOptions.edgePath}`);
+            process.env.CHROME_PATH = this.browserOptions.browserPath;
+            console.log(`[Browser] 使用浏览器: ${this.browserOptions.browserPath}`);
         }
 
         if (this.proxy) {
@@ -60,7 +70,32 @@ class BrowserService {
             targetPage = page;
         }
         this.page = targetPage;
+        await targetPage.setExtraHTTPHeaders({
+            'Accept-Language': BROWSER_ACCEPT_LANGUAGE,
+        });
+        await targetPage.emulateTimezone(BROWSER_TIMEZONE);
+        await targetPage.evaluateOnNewDocument((prefs) => {
+            Object.defineProperty(navigator, 'language', {
+                configurable: true,
+                get: () => prefs.locale,
+            });
+            Object.defineProperty(navigator, 'languages', {
+                configurable: true,
+                get: () => prefs.languages,
+            });
+
+            const originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+            Intl.DateTimeFormat.prototype.resolvedOptions = function (...args) {
+                const options = originalResolvedOptions.apply(this, args);
+                return {
+                    ...options,
+                    locale: prefs.locale,
+                    timeZone: prefs.timezone,
+                };
+            };
+        }, getBrowserPreferenceScript());
         await targetPage.setViewport({ width: 1280, height: 900 });
+        console.log(`[Browser] 语言偏好: ${BROWSER_LOCALE}, 时区: ${BROWSER_TIMEZONE}`);
         console.log('[Browser] 浏览器已启动 (1280x900)');
     }
 
@@ -99,11 +134,13 @@ class BrowserService {
      * 通过文字匹配点击按钮（完整鼠标事件链，兼容 React）
      */
     async clickButtonByText(text, timeout = 10000) {
+        const variants = Array.isArray(text) ? text : [text];
         const start = Date.now();
         while (Date.now() - start < timeout) {
-            const clicked = await this.page.evaluate((t) => {
+            const clicked = await this.page.evaluate((list) => {
                 for (const b of document.querySelectorAll('button, [role="button"]')) {
-                    if (b.innerText && b.innerText.includes(t)) {
+                    const content = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    if (list.some((item) => content.includes(String(item).trim().toLowerCase()))) {
                         // 完整的鼠标事件链以触发 React 事件处理
                         ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
                             b.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
@@ -112,11 +149,11 @@ class BrowserService {
                     }
                 }
                 return false;
-            }, text);
+            }, variants);
             if (clicked) return;
             await SLEEP(1000);
         }
-        throw new Error(`找不到包含"${text}"的按钮`);
+        throw new Error(`找不到包含"${variants.join('" / "')}"的按钮`);
     }
 
     /**
@@ -130,35 +167,41 @@ class BrowserService {
      * 等待页面上出现指定文字
      */
     async waitForTextOnPage(text, timeout = 30000) {
+        const variants = Array.isArray(text) ? text : [text];
         const start = Date.now();
         while (Date.now() - start < timeout) {
             try {
-                const found = await this.page.evaluate((t) => document.body?.innerText?.includes(t), text);
+                const found = await this.page.evaluate((list) => {
+                    const content = (document.body?.innerText || '').toLowerCase();
+                    return list.some((item) => content.includes(String(item).trim().toLowerCase()));
+                }, variants);
                 if (found) return;
             } catch (e) { /* context destroyed during navigation */ }
             await SLEEP(1000);
         }
-        throw new Error(`等待文字"${text}"超时`);
+        throw new Error(`等待文字"${variants.join('" / "')}"超时`);
     }
 
     /**
      * 等待包含指定文字的按钮出现
      */
     async waitForButtonByText(text, timeout = 30000) {
+        const variants = Array.isArray(text) ? text : [text];
         const start = Date.now();
         while (Date.now() - start < timeout) {
             try {
-                const found = await this.page.evaluate((t) => {
+                const found = await this.page.evaluate((list) => {
                     for (const b of document.querySelectorAll('button, [role="button"], a')) {
-                        if (b.innerText && b.innerText.includes(t)) return true;
+                        const content = (b.innerText || b.textContent || '').trim().toLowerCase();
+                        if (list.some((item) => content.includes(String(item).trim().toLowerCase()))) return true;
                     }
                     return false;
-                }, text);
+                }, variants);
                 if (found) return;
             } catch (e) { /* context destroyed during navigation */ }
             await SLEEP(2000);
         }
-        throw new Error(`等待按钮"${text}"超时`);
+        throw new Error(`等待按钮"${variants.join('" / "')}"超时`);
     }
 
     /**
@@ -274,20 +317,20 @@ class BrowserService {
 
         // 等待页面完全渲染（等待"免费注册"按钮出现）
         console.log('[Browser] 等待页面渲染...');
-        await this.waitForButtonByText('免费注册', 30000);
+        await this.waitForButtonByText(UI_TEXT.signUpFree, 30000);
         // 额外等待确保 React 事件处理器已绑定
         await SLEEP(5000);
 
         console.log('[Browser] 点击「免费注册」...');
-        await this.clickButtonByText('免费注册');
+        await this.clickButtonByText(UI_TEXT.signUpFree);
 
         // 等待弹窗出现（"登录或注册" 标题）
         console.log('[Browser] 等待注册弹窗...');
-        await this.waitForTextOnPage('登录或注册', 15000);
+        await this.waitForTextOnPage(UI_TEXT.loginOrSignup, 15000);
         await SLEEP(1000);
 
         console.log('[Browser] 点击「继续使用手机登录」...');
-        await this.clickButtonByText('手机登录', 10000);
+        await this.clickButtonByText(UI_TEXT.phoneLogin, 10000);
 
         // 等待手机号输入框出现
         console.log('[Browser] 等待手机号输入框...');
@@ -781,7 +824,7 @@ class BrowserService {
         const hasLoginBtn = await this.page.evaluate(() => {
             for (const b of document.querySelectorAll('button, a')) {
                 const text = b.innerText.trim();
-                if (text === '登录' || text === 'Log in') return true;
+                if (['登录', 'Log in'].includes(text)) return true;
             }
             return false;
         });
@@ -792,13 +835,13 @@ class BrowserService {
         }
 
         console.log('[Phase1.5] 点击「登录」...');
-        await this.clickButtonByText('登录');
+        await this.clickButtonByText(UI_TEXT.login);
 
         // 3. 等待登录弹窗 → 选手机登录
-        await this.waitForTextOnPage('登录或注册', 15000);
+        await this.waitForTextOnPage(UI_TEXT.loginOrSignup, 15000);
         await SLEEP(1000);
         console.log('[Phase1.5] 点击「继续使用手机登录」...');
-        await this.clickButtonByText('手机登录', 10000);
+        await this.clickButtonByText(UI_TEXT.phoneLogin, 10000);
 
         // 4. 输入手机号
         await this.waitFor('input[name="phoneNumberInput"]', 15000);
@@ -843,7 +886,7 @@ class BrowserService {
                     lastHandledUrl = url;
                     continue;
                 }
-                const isMainPage = !pageState.text.includes('登录或注册')
+                const isMainPage = !includesAnyText(pageState.text, UI_TEXT.loginOrSignup)
                     && !pageState.text.includes('确认一下你的年龄')
                     && !pageState.text.includes('about-you');
                 if (isMainPage) {
@@ -1035,14 +1078,14 @@ class BrowserService {
             console.log(`[OAuth]   按钮: ${pageInfo.btns.slice(0, 8).join(', ')}`);
 
             // 1. 登录/注册选择页 - 根据配置选择登录方式
-            const hasPhoneLogin = pageInfo.btns.some(b => b.includes('手机登录'));
-            const hasEmailLogin = pageInfo.btns.some(b => b.includes('电子邮件地址登录') || b.includes('邮箱登录') || b.includes('email'));
+            const hasPhoneLogin = pageInfo.btns.some(b => includesAnyText(b, UI_TEXT.phoneLogin));
+            const hasEmailLogin = pageInfo.btns.some(b => includesAnyText(b, UI_TEXT.emailLogin));
             if (loginMethod === 'email' && hasEmailLogin) {
                 console.log('[OAuth] 点击「继续使用电子邮件地址登录」...');
                 try {
-                    await this.clickButtonByText('电子邮件地址登录');
+                    await this.clickButtonByText(UI_TEXT.emailLogin);
                 } catch (e) {
-                    try { await this.clickButtonByText('邮箱登录', 3000); } catch (e2) {
+                    try { await this.clickButtonByText(['邮箱登录', 'Email address'], 3000); } catch (e2) {
                         await this.clickButtonByText('email');
                     }
                 }
@@ -1052,7 +1095,7 @@ class BrowserService {
             }
             if (loginMethod !== 'email' && hasPhoneLogin) {
                 console.log('[OAuth] 点击「继续使用手机登录」...');
-                await this.clickButtonByText('手机登录');
+                await this.clickButtonByText(UI_TEXT.phoneLogin);
                 await SLEEP(3000);
                 lastHandledUrl = url;
                 continue;

@@ -10,6 +10,7 @@
 - 运行时会在本机启动浏览器自动化，不是 Browserbase 之类的远程浏览器模式
 - 浏览器控制使用 `puppeteer-real-browser`
 - OAuth 回调通过捕获浏览器里的 `localhost` 请求 URL 解析授权码，不依赖本地 HTTP 回调服务
+- 现已提供 `Dockerfile` 与 `docker-compose.yml`，可在容器内通过 `xvfb-run` 启动图形浏览器
 
 ## 已确认的依赖
 
@@ -66,7 +67,8 @@
 - `heroSmsCountry`: `16`
 - `oauthClientId`: `app_EMoamEEZ73f0CkXaXp7hrann`
 - `oauthRedirectPort`: `1455`
-- `tokenOutputDir`: 未配置时回退到当前目录下的 `tokens/`
+- `tokenOutputDir`: 未配置时回退到 `CODEX_DATA_DIR/tokens/`，未设置 `CODEX_DATA_DIR` 时再回退到当前目录下的 `tokens/`
+- `CODEX_DATA_DIR`: 未设置时回退到当前工作目录
 
 ## 使用方式
 
@@ -102,6 +104,38 @@ node index.js --phase2
 node index.js --phase8
 ```
 
+## Docker 运行
+
+准备：
+
+- 在仓库根目录提供 `config.json`
+- 首次运行前创建宿主机目录 `data/`
+
+单次完整流程：
+
+```bash
+docker compose run --rm registrar 1
+```
+
+批量完整流程：
+
+```bash
+docker compose run --rm registrar 5
+```
+
+`--phase2` / `--phase8`：
+
+```bash
+docker compose run --rm registrar --phase2
+docker compose run --rm registrar --phase8
+```
+
+容器内约定：
+
+- `config.json` 只读挂载到 `/app/config.json`
+- `CODEX_DATA_DIR=/app/data`
+- `accounts.json` / `username.json` / `shibai.json` / `tokens/` 都会写到挂载出来的 `data/` 目录
+
 ## 已确认的流程
 
 完整流程分四步：
@@ -131,6 +165,8 @@ node index.js --phase8
 - `shibai.json`
 - `tokens/` 或 `tokenOutputDir` / `tokenOutputDirs`
 
+如果设置了 `CODEX_DATA_DIR`，以上默认文件会改为写入该目录下。
+
 token 文件名格式已确认是：
 
 ```text
@@ -157,9 +193,9 @@ token 文件包含这些字段：
 
 ## 运行限制
 
-- Linux 下主程序会主动拒绝 `xvfb-run` 环境
+- Linux 下默认仍会拒绝 `xvfb-run` 环境；设置 `ALLOW_XVFB=1` 或在 Docker 容器内运行时会放行
 - 浏览器启动参数里固定包含 `--no-sandbox`
-- 当前仓库没有提供 `Dockerfile` 或 `docker-compose` 文件
+- Docker 启动脚本会自动通过 `xvfb-run` 提供虚拟显示
 
 ## 已知现状
 

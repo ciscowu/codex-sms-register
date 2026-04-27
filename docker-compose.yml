@@ -1,0 +1,11 @@
+services:
+  registrar:
+    build:
+      context: .
+    environment:
+      ALLOW_XVFB: "1"
+      CODEX_DATA_DIR: /app/data
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+    command: ["1"]

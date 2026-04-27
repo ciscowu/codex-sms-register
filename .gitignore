@@ -6,6 +6,7 @@ accounts.json
 
 # OAuth Token
 tokens/
+data/
 
 # 依赖dangeou
 node_modules/
@@ -18,3 +19,5 @@ node_modules/
 .config.json
 .accounts.json
 cli-proxy-api/
+docker/
+test/
