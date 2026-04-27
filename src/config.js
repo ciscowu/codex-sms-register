@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const { resolveDataDir, resolveProxyHost } = require('./runtimeEnvironment');
+const { resolveDataDir, resolveOutputPath, resolveProxyHost } = require('./runtimeEnvironment');
 
 const configPath = path.join(__dirname, '..', 'config.json');
 const dataDir = resolveDataDir();
@@ -46,9 +46,11 @@ module.exports = {
     // OAuth
     oauthClientId: config.oauthClientId || 'app_EMoamEEZ73f0CkXaXp7hrann',
     oauthRedirectPort: parseInt(config.oauthRedirectPort, 10) || 1455,
-    tokenOutputDir: config.tokenOutputDir || path.join(dataDir, 'tokens'),
+    tokenOutputDir: resolveOutputPath(config.tokenOutputDir || path.join(dataDir, 'tokens'), { baseDir: dataDir }),
     tokenOutputDirs: Array.isArray(config.tokenOutputDirs)
-        ? config.tokenOutputDirs.filter(Boolean)
+        ? config.tokenOutputDirs
+            .filter(Boolean)
+            .map((dir) => resolveOutputPath(dir, { baseDir: dataDir }))
         : [],
 
     // 浏览器

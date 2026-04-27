@@ -98,7 +98,7 @@ node index.js --phase2
 - 读取 `username.json`
 - 按邮箱登录 OAuth
 - 成功后换取并保存 token
-- 失败记录追加到 `shibai.json`
+- 失败记录追加到 `error_account.json`
 
 ```bash
 node index.js --phase8
@@ -134,7 +134,7 @@ docker compose run --rm registrar --phase8
 
 - `config.json` 只读挂载到 `/app/config.json`
 - `CODEX_DATA_DIR=/app/data`
-- `accounts.json` / `username.json` / `shibai.json` / `tokens/` 都会写到挂载出来的 `data/` 目录
+- `accounts.json` / `username.json` / `error_account.json` / `tokens/` 都会写到挂载出来的 `data/` 目录
 
 ## 已确认的流程
 
@@ -154,7 +154,7 @@ docker compose run --rm registrar --phase8
 1. 读取 `username.json`
 2. 按邮箱走 OAuth
 3. 成功后保存 token
-4. 失败时把原记录追加到 `shibai.json`
+4. 失败时把原记录追加到 `error_account.json`
 
 ## 输出文件
 
@@ -162,7 +162,7 @@ docker compose run --rm registrar --phase8
 
 - `accounts.json`
 - `username.json`
-- `shibai.json`
+- `error_account.json`
 - `tokens/` 或 `tokenOutputDir` / `tokenOutputDirs`
 
 如果设置了 `CODEX_DATA_DIR`，以上默认文件会改为写入该目录下。

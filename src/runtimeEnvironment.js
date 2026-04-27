@@ -50,6 +50,15 @@ function resolveDataDir({ env = process.env, cwd = process.cwd() } = {}) {
     return path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate);
 }
 
+function resolveOutputPath(targetPath, { baseDir, cwd = process.cwd() } = {}) {
+    const value = String(targetPath || '').trim();
+    if (!value) return '';
+    if (path.isAbsolute(value)) return value;
+
+    const root = String(baseDir || '').trim() || cwd;
+    return path.resolve(root, value);
+}
+
 function resolveBrowserExecutablePath(options = {}) {
     return String(options.chromePath || options.browserPath || options.edgePath || '').trim();
 }
@@ -72,6 +81,7 @@ module.exports = {
     isRunningInDocker,
     resolveBrowserExecutablePath,
     resolveDataDir,
+    resolveOutputPath,
     resolveProxyHost,
     shouldAllowXvfb,
     shouldBlockXvfbRuntime,

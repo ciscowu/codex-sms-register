@@ -16,7 +16,8 @@ const TARGET_COUNT = parseInt(args.find(a => /^\d+$/.test(a)) || '1', 10);
 const DATA_DIR = config.dataDir || process.cwd();
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const USERNAME_FILE = path.join(DATA_DIR, 'username.json');
-const SHIBAI_FILE = path.join(DATA_DIR, 'shibai.json');
+const ERROR_ACCOUNT_FILE = path.join(DATA_DIR, 'error_account.json');
+const LEGACY_SHIBAI_FILE = path.join(DATA_DIR, 'shibai.json');
 const TOKEN_OUTPUT_DIR = config.tokenOutputDir || path.join(DATA_DIR, 'tokens');
 const SMS_POLL_INTERVAL = 5000;
 const SMS_MAX_ATTEMPTS = 60; // 60 * 5s = 5 min
@@ -205,10 +206,12 @@ async function pollEmailCodeByAddress(mailProvider, email, maxAttempts = 30, int
     throw new Error(`${email} email code timeout`);
 }
 
-function readJsonArray(filePath) {
-    if (!fs.existsSync(filePath)) return [];
+function readJsonArray(filePath, fallbackPaths = []) {
+    const candidates = [filePath, ...fallbackPaths];
+    const existingFile = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!existingFile) return [];
     try {
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const parsed = JSON.parse(fs.readFileSync(existingFile, 'utf8'));
         if (Array.isArray(parsed)) return parsed;
         if (parsed && typeof parsed === 'object') return [parsed];
         return [];
@@ -225,10 +228,13 @@ function appendToJsonArrayFile(filePath, item) {
     return list.length;
 }
 
-function appendFailedToShibai(entry) {
+function appendFailedToErrorAccount(entry) {
     const failedEntry = entry && typeof entry === 'object' ? { ...entry } : { raw: entry };
-    const total = appendToJsonArrayFile(SHIBAI_FILE, failedEntry);
-    console.log(`[Phase8] appended failed record to shibai.json, total=${total}`);
+    const existing = readJsonArray(ERROR_ACCOUNT_FILE, [LEGACY_SHIBAI_FILE]);
+    existing.push(failedEntry);
+    ensureParentDir(ERROR_ACCOUNT_FILE);
+    fs.writeFileSync(ERROR_ACCOUNT_FILE, JSON.stringify(existing, null, 2));
+    console.log(`[Phase8] appended failed record to error_account.json, total=${existing.length}`);
 }
 
 function calcAgeFromBirthDate(birthDate) {
@@ -773,7 +779,7 @@ async function startPhase8() {
         } catch (error) {
             failed++;
             console.error(`[Phase8] (${idx}/${records.length}) failed: ${error.message}`);
-            appendFailedToShibai(entry);
+            appendFailedToErrorAccount(entry);
         }
 
         if (i < records.length - 1) {
