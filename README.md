@@ -1,220 +1,168 @@
-# Codex 远程注册机
+# codex-registrar2
 
-基于 Browserbase 远程浏览器服务和 DDG 邮箱别名服务的 Codex Token 自动注册工具。
+基于本地浏览器自动化的 Codex OAuth 注册脚本。
 
-## 功能特点
+当前 README 仅保留已从代码确认过的行为，不包含历史方案、外部服务宣传或未验证说明。
 
-- 🌐 **远程浏览器**: 使用 Browserbase 提供的远程浏览器服务，无需本地浏览器，不会被风控
-- 📧 **DDG 邮箱别名**: 使用 DuckDuckGo 的邮箱别名服务生成临时邮箱
-- 🔄 **两阶段注册**:
-  - 第一阶段：ChatGPT 账户注册
-  - 第二阶段：Codex OAuth 授权
+## 已确认的运行方式
 
-## 环境要求
+- 入口是 `index.js`
+- 运行时会在本机启动浏览器自动化，不是 Browserbase 之类的远程浏览器模式
+- 浏览器控制使用 `puppeteer-real-browser`
+- OAuth 回调通过捕获浏览器里的 `localhost` 请求 URL 解析授权码，不依赖本地 HTTP 回调服务
+
+## 已确认的依赖
 
 - Node.js 18+
-- 有效的 DDG Token
-- 可访问的邮箱收件箱 URL
+- `npm install`
+- 可用的本地浏览器运行环境
+- HeroSMS API Key
+- 临时邮箱服务后台接口
 
-## 安装
+`package.json` 当前依赖：
 
-```bash
-npm install
-```
+- `axios`
+- `dotenv`
+- `puppeteer-core`
+- `puppeteer-real-browser`
+- `ws`
 
-## 配置
+## 配置文件
 
-编辑 `config.json` 文件，填入必要参数：
+程序读取仓库根目录的 `config.json`。
+
+当前代码会读取这些字段：
 
 ```json
 {
-  "ddgToken": "your_ddg_token_here",
-  "mailInboxUrl": "https://your-mail-inbox-url.com",
+  "heroSmsApiKey": "",
+  "heroSmsService": "dr",
+  "heroSmsCountry": 16,
+  "mailBaseUrl": "",
+  "mailAdminPassword": "",
+  "mailSitePassword": "",
+  "mailDomain": "",
+  "proxyHost": "",
+  "proxyPort": 0,
+  "proxyUsername": "",
+  "proxyPassword": "",
   "oauthClientId": "app_EMoamEEZ73f0CkXaXp7hrann",
-  "oauthRedirectPort": 1455
+  "oauthRedirectPort": 1455,
+  "tokenOutputDir": "",
+  "tokenOutputDirs": []
 }
 ```
 
-### 配置项说明
+完整流程实际会用到的核心字段：
 
-| 字段 | 说明 | 必填 |
-|------|------|------|
-| `ddgToken` | DDG 邮箱别名服务的 Bearer Token | ✅ |
-| `mailInboxUrl` | 可被 Browserbase 访问的邮箱收件箱 URL（带 JWT） | ✅ |
-| `oauthClientId` | OAuth 客户端 ID | ❌ 默认即可 |
-| `oauthRedirectPort` | 本地回调端口 | ❌ 默认 1455 （其实根本不会使用） |
+- `heroSmsApiKey`
+- `mailBaseUrl`
+- `mailAdminPassword`
+- `mailDomain`
 
----
+代码已确认的默认值：
 
-## 配置获取教程
+- `heroSmsService`: `dr`
+- `heroSmsCountry`: `16`
+- `oauthClientId`: `app_EMoamEEZ73f0CkXaXp7hrann`
+- `oauthRedirectPort`: `1455`
+- `tokenOutputDir`: 未配置时回退到当前目录下的 `tokens/`
 
-### 1. 获取 DDG Token（DuckDuckGo 邮箱别名服务）
+## 使用方式
 
-DuckDuckGo Email Protection 提供邮箱别名服务，可以生成 `xxx@duck.com` 格式的临时邮箱。
-
-#### 步骤一：安装 DuckDuckGo 浏览器扩展
-
-1. 打开 Chrome 或 Edge 浏览器
-2. 访问 [DuckDuckGo Privacy Essentials](https://chrome.google.com/webstore/detail/duckduckgo-privacy-essent/bkdgflcldnnnapblkhphbgpggdiikppg) 扩展页面
-3. 点击「添加到 Chrome」安装扩展
-
-#### 步骤二：启用邮箱保护功能
-
-1. 点击浏览器右上角的 DuckDuckGo 图标
-2. 在弹出的面板中找到「Email Protection」选项
-3. 点击开启并按提示完成设置（需要输入一个邮箱作为转发地址，请使用 `mailInboxUrl` 对应的邮箱）
-
-#### 步骤三：获取 Token
-
-1. 打开浏览器开发者工具（F12）
-2. 切换到「Network」标签
-3. 在 DuckDuckGo 扩展中点击「Generate New Private Address」或类似按钮
-4. 在 Network 列表中找到请求 `https://quack.duckduckgo.com/api/email/addresses`
-5. 点击该请求，在「Headers」标签页中找到 `Authorization` 请求头
-6. 复制 `Bearer ` 后面的部分，这就是你的 DDG Token
-
-**示例：**
-```
-Authorization: Bearer 1234567890qwertyuiopasdfghjklzxcvbnm
-```
-
-则 Token 为：`Authorization: Bearer 1234567890qwertyuiopasdfghjklzxcvbnm`
-
-#### 验证 Token 是否有效
-
-```bash
-curl -X POST https://quack.duckduckgo.com/api/email/addresses \
-  -H "Authorization: Bearer YOUR_TOKEN_HERE"
-```
-
-成功响应示例：
-```json
-{"address":"a-b-c"}
-```
-
----
-
-### 2. 获取 mailInboxUrl（Cloudflare 临时邮箱）
-
-由于 Browserbase 远程浏览器需要访问收件箱来获取验证码，你需要使用一个可以从公网访问的临时邮箱服务。推荐使用 Cloudflare Workers 部署的临时邮箱服务。
-
-#### 方案一：使用 Cloudflare Temp Mail（推荐）
-
-1. **Fork 并部署项目**
-   - 访问 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)
-   - 按照 README 说明部署到 Cloudflare Workers
-
-或者 **使用其他人部署的项目**
-   - 比如 [mail.awsl.uk](https://mail.awsl.uk/)
-
-2. **配置邮件地址**
-   - 部署完成后，访问你的邮箱域名
-   - 点击「创建新邮箱」
-   - 复制「打开即可自动登录邮箱的链接」作为 `mailInboxUrl`
-
-#### 方案二：使用其他临时邮箱服务
-
-你也可以使用其他支持公网访问的临时邮箱服务，只要满足以下条件：
-- 提供网页界面获取邮件内容
-- URL 可以被 Browserbase 远程浏览器访问
-
----
-
-### 3. OAuth 配置（可选）
-
-`oauthClientId` 和 `oauthRedirectPort` 通常使用默认值即可。如果你需要自定义：
-
-- `oauthClientId`: OpenAI OAuth 应用的客户端 ID
-- `oauthRedirectPort`: 本地 OAuth 回调服务监听的端口，确保未被占用
-
----
-
-## 使用方法
-
-### 单次注册
+单次完整流程：
 
 ```bash
 node index.js 1
 ```
 
-### 批量注册
+批量完整流程：
 
 ```bash
-node index.js 5  # 注册 5 个账户
+node index.js 5
 ```
 
-## 工作流程
+`--phase2` 模式：
 
-### 第一阶段：ChatGPT 注册
+- 从 `accounts.json` 里找一个 `status === "registered"` 且带密码的账号
+- 执行 Phase 1.5、Phase 2、Phase 3
 
-1. 生成 DDG 邮箱别名
-2. 创建 Browserbase 会话
-3. 发送 Agent 任务到远程浏览器
-4. 监控页面 URL 变化，等待到达完成页面
+```bash
+node index.js --phase2
+```
 
-### 第二阶段：Codex OAuth
+`--phase8` 模式：
 
-1. 生成 OAuth 授权链接
-2. 创建新的 Browserbase 会话
-3. 发送 Agent 任务进行授权
-4. 监控 localhost 回调，提取授权码
-5. 用授权码换取 Token 并保存
+- 读取 `username.json`
+- 按邮箱登录 OAuth
+- 成功后换取并保存 token
+- 失败记录追加到 `shibai.json`
+
+```bash
+node index.js --phase8
+```
+
+## 已确认的流程
+
+完整流程分四步：
+
+1. `phase1`
+   用 HeroSMS 获取手机号，完成 ChatGPT 手机号注册，并把账号写入 `accounts.json`
+2. `phase1_5`
+   首次登录 ChatGPT，补全个人资料
+3. `phase2`
+   创建临时邮箱，完成手机号登录后的邮箱绑定，并把结果追加到 `username.json`
+4. `phase3`
+   用邮箱重新走 OAuth，拿授权码并换取 token
+
+`phase8` 是独立补跑流程，不依赖当次注册：
+
+1. 读取 `username.json`
+2. 按邮箱走 OAuth
+3. 成功后保存 token
+4. 失败时把原记录追加到 `shibai.json`
 
 ## 输出文件
 
-Token 文件保存在 `tokens/` 目录下，格式如下：
+当前代码会直接读写这些文件：
 
-```json
-{
-  "access_token": "eyJ...",
-  "account_id": "xxx",
-  "disabled": false,
-  "email": "xxx@duck.com",
-  "expired": "2026-03-31T00:00:00+08:00",
-  "id_token": "eyJ...",
-  "last_refresh": "2026-03-31T00:00:00+08:00",
-  "refresh_token": "xxx",
-  "type": "codex"
-}
+- `accounts.json`
+- `username.json`
+- `shibai.json`
+- `tokens/` 或 `tokenOutputDir` / `tokenOutputDirs`
+
+token 文件名格式已确认是：
+
+```text
+codex-{email}-free.json
 ```
 
-## 故障排除
+token 文件包含这些字段：
 
-### DDG 邮箱生成失败
+- `access_token`
+- `account_id`
+- `disabled`
+- `email`
+- `expired`
+- `id_token`
+- `last_refresh`
+- `refresh_token`
+- `type`
 
-1. 检查 DDG Token 是否有效
-2. 确认 Token 未过期
-3. 尝试重新获取 Token
+## 代理行为
 
-```bash
-# 测试 Token
-curl -X POST https://quack.duckduckgo.com/api/email/addresses \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
+- 如果配置了 `proxyHost`，浏览器和 token 交换都会先尝试走代理
+- 若检测到代理连接失败，主流程会自动切换为直连重试当前轮任务
+- 若 token 交换时 Node 网络层失败，代码会尝试回退到 `curl`
 
-### 邮箱验证码获取失败
+## 运行限制
 
-1. 确保 `mailInboxUrl` 可以被 Browserbase 访问
-2. 检查 JWT 是否有效（未过期）
-3. 确认邮箱地址与发送验证码的地址一致
+- Linux 下主程序会主动拒绝 `xvfb-run` 环境
+- 浏览器启动参数里固定包含 `--no-sandbox`
+- 当前仓库没有提供 `Dockerfile` 或 `docker-compose` 文件
 
-### Browserbase 连接失败
+## 已知现状
 
-Browserbase 服务使用的是公开的 Gemini 浏览器服务，如果连接失败：
-1. 检查网络连接
-2. 确认 `gemini.browserbase.com` 域名可访问
-
-### OAuth 授权失败
-
-1. 确认 `oauthClientId` 正确
-2. 检查本地端口 `oauthRedirectPort` 未被占用
-3. 查看终端输出的错误信息
-
-## 注意事项
-
-- ⚠️ DDG Token 具有时效性，过期后需要重新获取
-- ⚠️ 请合理使用，避免频繁注册触发风控
-
-## 许可证
-
-ISC
+- 文档历史内容已过时时，应以代码为准
+- 当前代码里没有   接入
+- 当前代码里没有内置本地 HTTP OAuth 回调服务

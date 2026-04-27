@@ -2,10 +2,21 @@ const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFile } = require('child_process');
+const { promisify } = require('util');
 const config = require('./config');
 
 const SLEEP = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const execFileAsync = promisify(execFile);
+const TOKEN_URL = 'https://auth.openai.com/oauth/token';
+const CURL_STATUS_MARKER = '__CODEX_HTTP_STATUS__:';
+const RETRYABLE_ERROR_CODES = new Set([
+    'EAI_AGAIN',
+    'ENOTFOUND',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'ECONNABORTED',
+]);
 
 function parseProxyEndpoint(endpoint) {
     if (!endpoint || typeof endpoint !== 'string') return null;
@@ -24,6 +35,7 @@ function parseProxyEndpoint(endpoint) {
         if (!u.hostname || !port) return null;
 
         return {
+            protocol: u.protocol,
             host: u.hostname,
             port,
             username: decodeURIComponent(u.username || ''),
@@ -94,19 +106,79 @@ function detectSystemProxy() {
     return detectProxyFromEnv() || detectProxyFromWinHttp();
 }
 
+function isRetryableTokenError(error) {
+    const status = error?.response?.status;
+    const code = error?.code;
+    return RETRYABLE_ERROR_CODES.has(code) || status === 429 || (status >= 500 && status <= 599);
+}
+
+function shouldFallbackToCurl(error) {
+    return RETRYABLE_ERROR_CODES.has(error?.code);
+}
+
+function parseMaybeJson(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return raw;
+
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        return raw;
+    }
+}
+
+function createHttpResponseError(status, data) {
+    const message = data?.error?.message || data?.message || `HTTP ${status}`;
+    const error = new Error(message);
+    error.response = { status, data };
+    return error;
+}
+
+function mapCurlExitCodeToNetworkCode(code) {
+    switch (Number(code)) {
+        case 6:
+            return 'ENOTFOUND';
+        case 7:
+            return 'ECONNREFUSED';
+        case 28:
+            return 'ETIMEDOUT';
+        case 35:
+        case 56:
+            return 'ECONNRESET';
+        default:
+            return 'CURL_EXEC_ERROR';
+    }
+}
+
+function wrapCurlExecError(error) {
+    const message = String(error?.stderr || error?.message || 'curl request failed').trim();
+    const wrapped = new Error(message || 'curl request failed');
+    wrapped.code = mapCurlExitCodeToNetworkCode(error?.code);
+    wrapped.cause = error;
+    return wrapped;
+}
+
+function buildProxyUrl(proxy) {
+    if (!proxy?.host || !proxy?.port) return '';
+    const protocol = proxy.protocol || 'http:';
+    return `${protocol}//${proxy.host}:${proxy.port}`;
+}
+
 class OAuthService {
     constructor(options = {}) {
         this.clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
         this.redirectPort = 1455;
         this.redirectUri = `http://localhost:${this.redirectPort}/auth/callback`;
         this.proxy = options.proxy || detectSystemProxy() || null;
+        this.axiosPost = options.axiosPost || axios.post.bind(axios);
+        this.execFile = options.execFile || execFileAsync;
         this.codeVerifier = null;
         this.codeChallenge = null;
         this.state = null;
 
         if (this.proxy && this.proxy.host && this.proxy.port) {
             const source = this.proxy.source ? ` (${this.proxy.source})` : '';
-            console.log(`[OAuth] oauth/token 使用代理: ${this.proxy.host}:${this.proxy.port}${source}`);
+            console.log(`[OAuth] oauth/token 使用代理: ${buildProxyUrl(this.proxy)}${source}`);
         }
 
         this.regeneratePKCE();
@@ -184,6 +256,102 @@ class OAuthService {
         }
     }
 
+    buildTokenRequestBody(code) {
+        return new URLSearchParams({
+            grant_type: 'authorization_code',
+            code: code,
+            redirect_uri: this.redirectUri,
+            client_id: this.clientId,
+            code_verifier: this.codeVerifier
+        }).toString();
+    }
+
+    buildAxiosRequestConfig() {
+        const requestConfig = {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 30000,
+        };
+
+        if (this.proxy && this.proxy.host && this.proxy.port) {
+            requestConfig.proxy = {
+                protocol: this.proxy.protocol || 'http:',
+                host: this.proxy.host,
+                port: this.proxy.port,
+            };
+            if (this.proxy.username || this.proxy.password) {
+                requestConfig.proxy.auth = {
+                    username: this.proxy.username || '',
+                    password: this.proxy.password || '',
+                };
+            }
+        }
+
+        return requestConfig;
+    }
+
+    async exchangeTokenViaAxios(body) {
+        return await this.axiosPost(TOKEN_URL, body, this.buildAxiosRequestConfig());
+    }
+
+    buildCurlArgs(body) {
+        const args = [
+            '--silent',
+            '--show-error',
+            '--location',
+            '--request',
+            'POST',
+            '--header',
+            'Content-Type: application/x-www-form-urlencoded',
+            '--data',
+            body,
+            '--max-time',
+            '30',
+            '--write-out',
+            `\n${CURL_STATUS_MARKER}%{http_code}`,
+        ];
+
+        if (this.proxy && this.proxy.host && this.proxy.port) {
+            args.push('--proxy', buildProxyUrl(this.proxy));
+            if (this.proxy.username || this.proxy.password) {
+                args.push('--proxy-user', `${this.proxy.username || ''}:${this.proxy.password || ''}`);
+            }
+        }
+
+        args.push(TOKEN_URL);
+        return args;
+    }
+
+    async exchangeTokenViaCurl(body) {
+        try {
+            const { stdout } = await this.execFile('curl', this.buildCurlArgs(body), {
+                maxBuffer: 1024 * 1024,
+            });
+            const markerIndex = stdout.lastIndexOf(`\n${CURL_STATUS_MARKER}`);
+            if (markerIndex === -1) {
+                throw new Error('curl token 响应缺少状态码');
+            }
+
+            const payloadText = stdout.slice(0, markerIndex);
+            const statusText = stdout.slice(markerIndex + 1 + CURL_STATUS_MARKER.length).trim();
+            const status = parseInt(statusText, 10);
+            const data = parseMaybeJson(payloadText);
+
+            if (!status) {
+                throw new Error('curl token 响应状态码无效');
+            }
+            if (status < 200 || status >= 300) {
+                throw createHttpResponseError(status, data);
+            }
+
+            return { status, data };
+        } catch (error) {
+            if (error?.response) {
+                throw error;
+            }
+            throw wrapCurlExecError(error);
+        }
+    }
+
     /**
      * 用授权码换取 Token
      * @param {string} code - 授权码
@@ -194,13 +362,7 @@ class OAuthService {
         try {
             console.log('[OAuth] 开始用 code 换取 Token');
 
-            const body = new URLSearchParams({
-                grant_type: 'authorization_code',
-                code: code,
-                redirect_uri: this.redirectUri,
-                client_id: this.clientId,
-                code_verifier: this.codeVerifier
-            }).toString();
+            const body = this.buildTokenRequestBody(code);
 
             const maxAttempts = 5;
             let response = null;
@@ -208,48 +370,30 @@ class OAuthService {
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    const requestConfig = {
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        timeout: 30000,
-                    };
-
-                    if (this.proxy && this.proxy.host && this.proxy.port) {
-                        requestConfig.proxy = {
-                            host: this.proxy.host,
-                            port: this.proxy.port,
-                        };
-                        if (this.proxy.username || this.proxy.password) {
-                            requestConfig.proxy.auth = {
-                                username: this.proxy.username || '',
-                                password: this.proxy.password || '',
-                            };
-                        }
-                    }
-
-                    response = await axios.post('https://auth.openai.com/oauth/token', body, {
-                        ...requestConfig,
-                    });
+                    response = await this.exchangeTokenViaAxios(body);
                     break;
                 } catch (err) {
                     lastError = err;
 
-                    const status = err?.response?.status;
-                    const code = err?.code;
-                    const retryable =
-                        code === 'EAI_AGAIN' ||
-                        code === 'ENOTFOUND' ||
-                        code === 'ECONNRESET' ||
-                        code === 'ETIMEDOUT' ||
-                        code === 'ECONNABORTED' ||
-                        status === 429 ||
-                        (status >= 500 && status <= 599);
+                    if (shouldFallbackToCurl(err)) {
+                        console.warn(`[OAuth] 检测到 Node 网络层失败(${err.code})，切换 curl 兜底...`);
+                        try {
+                            response = await this.exchangeTokenViaCurl(body);
+                            break;
+                        } catch (curlErr) {
+                            lastError = curlErr;
+                            err = curlErr;
+                        }
+                    }
 
-                    if (!retryable || attempt === maxAttempts) {
+                    if (!isRetryableTokenError(err) || attempt === maxAttempts) {
                         throw err;
                     }
 
+                    const status = err?.response?.status;
+                    const errorCode = err?.code;
                     const waitMs = attempt * 3000;
-                    console.warn(`[OAuth] 换 Token 第 ${attempt} 次失败(${code || status || 'unknown'})，${waitMs}ms 后重试...`);
+                    console.warn(`[OAuth] 换 Token 第 ${attempt} 次失败(${errorCode || status || 'unknown'})，${waitMs}ms 后重试...`);
                     await SLEEP(waitMs);
                 }
             }
