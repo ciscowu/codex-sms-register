@@ -1,6 +1,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
+const https = require('https');
 const path = require('path');
 const { execSync, execFile } = require('child_process');
 const { promisify } = require('util');
@@ -172,6 +173,8 @@ class OAuthService {
         this.proxy = options.proxy || detectSystemProxy() || null;
         this.axiosPost = options.axiosPost || axios.post.bind(axios);
         this.execFile = options.execFile || execFileAsync;
+        this.cpaUrl = String(options.cpaUrl ?? config.cpaUrl ?? '').trim();
+        this.cpaKey = String(options.cpaKey ?? config.cpaKey ?? '').trim();
         this.codeVerifier = null;
         this.codeChallenge = null;
         this.state = null;
@@ -182,6 +185,55 @@ class OAuthService {
         }
 
         this.regeneratePKCE();
+    }
+
+    shouldUploadAuthFile() {
+        return !!(this.cpaUrl && this.cpaKey);
+    }
+
+    buildCpaUploadRequestConfig() {
+        const requestConfig = {
+            headers: {
+                Authorization: `Bearer ${this.cpaKey}`,
+            },
+            timeout: 15000,
+        };
+
+        if (this.cpaUrl.startsWith('https://')) {
+            requestConfig.httpsAgent = new https.Agent({
+                rejectUnauthorized: false,
+            });
+        }
+
+        return requestConfig;
+    }
+
+    async uploadAuthFile(authJson) {
+        if (!this.shouldUploadAuthFile()) return null;
+
+        const email = String(authJson?.email || 'unknown').trim() || 'unknown';
+        const formData = new FormData();
+        const fileBlob = new Blob([JSON.stringify(authJson)], {
+            type: 'application/json',
+        });
+
+        formData.append('file', fileBlob, `codex-${email}.json`);
+        formData.append('channel', 'codex');
+
+        const response = await this.axiosPost(
+            `${this.cpaUrl}/v0/management/auth-files`,
+            formData,
+            this.buildCpaUploadRequestConfig(),
+        );
+
+        const text = typeof response?.data === 'string'
+            ? response.data
+            : JSON.stringify(response?.data ?? '');
+
+        return {
+            statusCode: response?.status || 0,
+            text,
+        };
     }
 
     /**
@@ -449,6 +501,18 @@ class OAuthService {
             }
 
             console.log(`[OAuth] Token 成功保存至: ${savedPaths.join(' | ')}`);
+
+            if (this.shouldUploadAuthFile()) {
+                try {
+                    const uploadResult = await this.uploadAuthFile(outData);
+                    if (uploadResult) {
+                        console.log(`[OAuth] CPA 上传成功: status=${uploadResult.statusCode}`);
+                    }
+                } catch (uploadError) {
+                    console.error('[OAuth] CPA 上传失败:', uploadError.message);
+                }
+            }
+
             return outData;
         } catch (error) {
             const apiErrorCode = error?.response?.data?.error?.code;

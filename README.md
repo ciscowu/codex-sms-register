@@ -47,6 +47,8 @@
   "proxyPort": 0,
   "proxyUsername": "",
   "proxyPassword": "",
+  "cpa_url": "",
+  "cpa_key": "",
   "oauthClientId": "app_EMoamEEZ73f0CkXaXp7hrann",
   "oauthRedirectPort": 1455,
   "tokenOutputDir": "",
@@ -60,6 +62,7 @@
 - `mailBaseUrl`
 - `mailAdminPassword`
 - `mailDomain`
+- `cpa_url` / `cpa_key`（如需在换到 token 后自动上传 auth JSON）
 
 代码已确认的默认值：
 
@@ -184,6 +187,13 @@ token 文件包含这些字段：
 - `last_refresh`
 - `refresh_token`
 - `type`
+
+如果配置了 `cpa_url` 和 `cpa_key`：
+
+- 每次成功换到 token 并生成 JSON 后，会额外上传一份 `codex-{email}.json`
+- 上传接口是 `POST {cpa_url}/v0/management/auth-files`
+- 表单字段固定包含 `file` 和 `channel=codex`
+- 上传失败只记日志，不回滚本地 token 文件
 
 ## 代理行为
 

@@ -52,6 +52,8 @@ module.exports = {
             .filter(Boolean)
             .map((dir) => resolveOutputPath(dir, { baseDir: dataDir }))
         : [],
+    cpaUrl: String(config.cpaUrl || config.cpa_url || '').trim(),
+    cpaKey: String(config.cpaKey || config.cpa_key || '').trim(),
 
     // 浏览器
     useChrome: config.useChrome !== false,
