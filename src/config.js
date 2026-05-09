@@ -57,5 +57,5 @@ module.exports = {
 
     // 浏览器
     useChrome: config.useChrome !== false,
-    chromePath: config.chromePath || 'google-chrome-stable',
+    chromePath: String(config.chromePath || '').trim(),
 };

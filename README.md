@@ -70,8 +70,8 @@
 - `heroSmsCountry`: `16`
 - `oauthClientId`: `app_EMoamEEZ73f0CkXaXp7hrann`
 - `oauthRedirectPort`: `1455`
-- `tokenOutputDir`: 未配置时回退到 `CODEX_DATA_DIR/tokens/`，未设置 `CODEX_DATA_DIR` 时再回退到当前目录下的 `tokens/`
-- `CODEX_DATA_DIR`: 未设置时回退到当前工作目录
+- `tokenOutputDir`: 未配置时回退到 `CODEX_DATA_DIR/tokens/`，未设置 `CODEX_DATA_DIR` 时再回退到当前目录下的 `data/tokens/`
+- `CODEX_DATA_DIR`: 未设置时回退到当前工作目录下的 `data/`
 
 ## 使用方式
 
@@ -168,7 +168,7 @@ docker compose run --rm registrar --phase8
 - `error_account.json`
 - `tokens/` 或 `tokenOutputDir` / `tokenOutputDirs`
 
-如果设置了 `CODEX_DATA_DIR`，以上默认文件会改为写入该目录下。
+如果设置了 `CODEX_DATA_DIR`，以上默认文件会改为写入该目录下；否则默认写入当前工作目录下的 `data/`。
 
 token 文件名格式已确认是：
 
@@ -185,6 +185,7 @@ token 文件包含这些字段：
 - `expired`
 - `id_token`
 - `last_refresh`
+- `password`
 - `refresh_token`
 - `type`
 
@@ -193,6 +194,7 @@ token 文件包含这些字段：
 - 每次成功换到 token 并生成 JSON 后，会额外上传一份 `codex-{email}.json`
 - 上传接口是 `POST {cpa_url}/v0/management/auth-files`
 - 表单字段固定包含 `file` 和 `channel=codex`
+- 上传内容与本地生成的 token JSON 一致，包含 `password`
 - 上传失败只记日志，不回滚本地 token 文件
 
 ## 代理行为

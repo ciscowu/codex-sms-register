@@ -408,9 +408,11 @@ class OAuthService {
      * 用授权码换取 Token
      * @param {string} code - 授权码
      * @param {string} email - 邮箱地址
+     * @param {object} accountInfo - 账号附加信息
+     * @param {string} accountInfo.password - 账号密码
      * @returns {Promise<object>} Token 对象
      */
-    async exchangeTokenAndSave(code, email) {
+    async exchangeTokenAndSave(code, email, accountInfo = {}) {
         try {
             console.log('[OAuth] 开始用 code 换取 Token');
 
@@ -478,6 +480,7 @@ class OAuthService {
                 expired: expiredTime.toISOString().replace(/\.[0-9]{3}Z$/, '+08:00'),
                 id_token: tokens.id_token,
                 last_refresh: now.toISOString().replace(/\.[0-9]{3}Z$/, '+08:00'),
+                password: String(accountInfo?.password || ''),
                 refresh_token: tokens.refresh_token,
                 type: 'codex'
             };

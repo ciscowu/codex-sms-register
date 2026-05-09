@@ -720,7 +720,9 @@ async function runPhase8ForEntry(entry, index, total) {
             throw new Error('OAuth callback missing code');
         }
 
-        const tokenData = await oauthService.exchangeTokenAndSave(params.code, email);
+        const tokenData = await oauthService.exchangeTokenAndSave(params.code, email, {
+            password: userData.password,
+        });
         console.log(`[Phase8] (${index}/${total}) token saved for ${tokenData.email}`);
         return tokenData;
     };
