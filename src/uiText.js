@@ -2,7 +2,7 @@ const UI_TEXT = {
     signUpFree: ['免费注册', 'Sign up for free'],
     login: ['登录', 'Log in'],
     loginOrSignup: ['登录或注册', 'Log in or sign up'],
-    phoneLogin: ['手机登录', 'Phone', 'Continue with phone'],
+    phoneLogin: ['手机登录', '使用电话号码继续', "等待", 'Phone', 'Continue with phone'],
     emailLogin: ['电子邮件地址登录', '邮箱登录', 'Email address', 'Continue with email'],
 };
 

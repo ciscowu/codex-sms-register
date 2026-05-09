@@ -25,11 +25,11 @@ class SMSProvider {
      * @param {number} country - 国家 ID（英国 = 16）
      * @returns {Promise<{activationId: number, phoneNumber: string}>}
      */
-    async getNumber(service = 'dr', country = 16, maxRetries = 5) {
+    async getNumber(service = 'dr', country = 16, maxRetries = 5, heroSmsMaxPrice) {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             let data;
             try {
-                data = await this.request('getNumberV2', { service, country });
+                data = await this.request('getNumberV2', { service, country, heroSmsMaxPrice});
             } catch (httpErr) {
                 console.log(`[SMS] API 请求失败: ${httpErr.message}，${attempt < maxRetries ? '5秒后重试...' : '已达最大重试次数'} (${attempt}/${maxRetries})`);
                 if (attempt < maxRetries) {

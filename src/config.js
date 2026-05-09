@@ -22,6 +22,7 @@ function loadConfig() {
 }
 
 const config = loadConfig();
+const heroSmsMaxPrice = Number(config.heroSmsMaxPrice);
 
 module.exports = {
     dataDir,
@@ -30,6 +31,7 @@ module.exports = {
     heroSmsApiKey: config.heroSmsApiKey,
     heroSmsService: config.heroSmsService || 'dr',
     heroSmsCountry: parseInt(config.heroSmsCountry, 10) || 16,
+    heroSmsMaxPrice: Number.isFinite(heroSmsMaxPrice) ? heroSmsMaxPrice : 0.015,
 
     // Cloudflare 临时邮箱
     mailBaseUrl: config.mailBaseUrl || '',

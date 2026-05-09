@@ -340,7 +340,7 @@ async function phase1(smsProvider, browserService, userData) {
     await browserService.navigateToSignup();
 
     // 2. 浏览器就绪后，才获取手机号（花钱操作尽量靠后）
-    await smsProvider.getNumber(config.heroSmsService, config.heroSmsCountry);
+    await smsProvider.getNumber(config.heroSmsService, config.heroSmsCountry, config.heroSmsMaxPrice);
     await smsProvider.markReady();
 
     let numberUsed = false;
