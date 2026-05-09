@@ -20,7 +20,7 @@ const ERROR_ACCOUNT_FILE = path.join(DATA_DIR, 'error_account.json');
 const LEGACY_SHIBAI_FILE = path.join(DATA_DIR, 'shibai.json');
 const TOKEN_OUTPUT_DIR = config.tokenOutputDir || path.join(DATA_DIR, 'tokens');
 const SMS_POLL_INTERVAL = 5000;
-const SMS_MAX_ATTEMPTS = 60; // 60 * 5s = 5 min
+const SMS_MAX_ATTEMPTS = 26; // 26 * 5s = 130s
 const PHASE8_ACCOUNT_DELAY_MS = 60 * 1000;
 
 function isProxyConnectionError(error) {
@@ -72,6 +72,98 @@ function assertNotRunningWithXvfb() {
 
 function ensureParentDir(filePath) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+/**
+ * 获取另一个数据目录（用于双写同步）
+ * 当前目录是 data/ 时返回根目录，反之亦然
+ */
+function getAlternateDataDir() {
+    const currentDir = DATA_DIR;
+    const rootDir = process.cwd();
+    const dataDir = path.resolve(rootDir, 'data');
+
+    // 如果当前是 data/ 目录，返回根目录；否则返回 data/ 目录
+    if (path.resolve(currentDir) === path.resolve(dataDir)) {
+        return rootDir;
+    }
+    return dataDir;
+}
+
+/**
+ * 合并两个位置的 JSON 数组文件（启动时调用）
+ * 以 phone 为主键去重，合并后写回两个位置
+ */
+function mergeJsonFiles(primaryPath, secondaryPath, keyField = 'phone') {
+    const primary = readJsonArray(primaryPath);
+    const secondary = readJsonArray(secondaryPath);
+
+    if (primary.length === 0 && secondary.length === 0) return [];
+    if (secondary.length === 0) return primary;
+    if (primary.length === 0) {
+        ensureParentDir(primaryPath);
+        fs.writeFileSync(primaryPath, JSON.stringify(secondary, null, 2));
+        return secondary;
+    }
+
+    // 以 keyField 为主键合并，保留最新的记录
+    const mergedMap = new Map();
+    for (const item of primary) {
+        const key = item[keyField];
+        if (key) mergedMap.set(key, item);
+    }
+    for (const item of secondary) {
+        const key = item[keyField];
+        if (!key) continue;
+        const existing = mergedMap.get(key);
+        if (!existing) {
+            mergedMap.set(key, item);
+        } else {
+            // 比较 createdAt，保留更新的
+            const existingTime = new Date(existing.createdAt || 0).getTime();
+            const itemTime = new Date(item.createdAt || 0).getTime();
+            if (itemTime > existingTime) {
+                mergedMap.set(key, item);
+            }
+        }
+    }
+
+    return Array.from(mergedMap.values());
+}
+
+/**
+ * 启动时合并本地和根目录的数据文件
+ */
+function mergeDataFiles() {
+    const altDir = getAlternateDataDir();
+    const altAccounts = path.join(altDir, 'accounts.json');
+    const altUsername = path.join(altDir, 'username.json');
+
+    console.log(`[同步] 检查数据同步: ${DATA_DIR} <-> ${altDir}`);
+
+    // 合并 accounts.json
+    if (fs.existsSync(ACCOUNTS_FILE) || fs.existsSync(altAccounts)) {
+        const mergedAccounts = mergeJsonFiles(ACCOUNTS_FILE, altAccounts, 'phone');
+        ensureParentDir(ACCOUNTS_FILE);
+        fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(mergedAccounts, null, 2));
+        if (path.resolve(ACCOUNTS_FILE) !== path.resolve(altAccounts)) {
+            ensureParentDir(altAccounts);
+            fs.writeFileSync(altAccounts, JSON.stringify(mergedAccounts, null, 2));
+        }
+        console.log(`[同步] accounts.json 合并完成 (共 ${mergedAccounts.length} 条)`);
+    }
+
+    // 合并 username.json
+    if (fs.existsSync(USERNAME_FILE) || fs.existsSync(altUsername)) {
+        const mergedUsername = mergeJsonFiles(USERNAME_FILE, altUsername, 'email');
+        ensureParentDir(USERNAME_FILE);
+        fs.writeFileSync(USERNAME_FILE, JSON.stringify(mergedUsername, null, 2));
+        if (path.resolve(USERNAME_FILE) !== path.resolve(altUsername)) {
+            ensureParentDir(altUsername);
+            fs.writeFileSync(altUsername, JSON.stringify(mergedUsername, null, 2));
+        }
+        console.log(`[同步] username.json 合并完成 (共 ${mergedUsername.length} 条)`);
+    }
 }
 
 /**
@@ -260,6 +352,15 @@ function saveAccount(phone, password, name, birthDate) {
     ensureParentDir(ACCOUNTS_FILE);
     fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
     console.log(`[账号] 已保存到 ${ACCOUNTS_FILE} (共 ${accounts.length} 个)`);
+
+    // 双写：同步到另一个数据目录
+    const altDir = getAlternateDataDir();
+    const altAccounts = path.join(altDir, 'accounts.json');
+    if (path.resolve(ACCOUNTS_FILE) !== path.resolve(altAccounts)) {
+        ensureParentDir(altAccounts);
+        fs.writeFileSync(altAccounts, JSON.stringify(accounts, null, 2));
+        console.log(`[账号] 双写同步: ${altAccounts}`);
+    }
 }
 
 /**
@@ -293,6 +394,24 @@ function updateAccountStatus(phone, status) {
         account.status = status;
         ensureParentDir(ACCOUNTS_FILE);
         fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+
+        // 双写：同步到另一个数据目录
+        const altDir = getAlternateDataDir();
+        const altAccounts = path.join(altDir, 'accounts.json');
+        if (path.resolve(ACCOUNTS_FILE) !== path.resolve(altAccounts)) {
+            let altAccountsList = [];
+            if (fs.existsSync(altAccounts)) {
+                try { altAccountsList = JSON.parse(fs.readFileSync(altAccounts, 'utf8')); } catch (e) {}
+            }
+            const altAccount = altAccountsList.find(a => a.phone === phone);
+            if (altAccount) {
+                altAccount.status = status;
+            } else {
+                altAccountsList.push({ ...account });
+            }
+            ensureParentDir(altAccounts);
+            fs.writeFileSync(altAccounts, JSON.stringify(altAccountsList, null, 2));
+        }
     }
 }
 
@@ -326,6 +445,25 @@ function saveUsernameFile({ email, phone, password, name, birthDate, status }) {
     ensureParentDir(USERNAME_FILE);
     fs.writeFileSync(USERNAME_FILE, JSON.stringify(usernameList, null, 2));
     console.log(`[账号] 已追加保存账户信息: ${USERNAME_FILE} (共 ${usernameList.length} 条)`);
+
+    // 双写：同步到另一个数据目录
+    const altDir = getAlternateDataDir();
+    const altUsername = path.join(altDir, 'username.json');
+    if (path.resolve(USERNAME_FILE) !== path.resolve(altUsername)) {
+        let altList = [];
+        if (fs.existsSync(altUsername)) {
+            try {
+                const parsed = JSON.parse(fs.readFileSync(altUsername, 'utf8'));
+                altList = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+            } catch (e) {
+                altList = [];
+            }
+        }
+        altList.push(outData);
+        ensureParentDir(altUsername);
+        fs.writeFileSync(altUsername, JSON.stringify(altList, null, 2));
+        console.log(`[账号] 双写同步: ${altUsername}`);
+    }
 }
 
 /**
@@ -499,8 +637,10 @@ async function phase3(smsProvider, mailProvider, browserService, oauthService, u
 
     console.log(`[阶段3] 成功获取授权码: ${params.code.substring(0, 10)}...`);
 
-    // 用授权码换取 Token
-    const tokenData = await oauthService.exchangeTokenAndSave(params.code, mailProvider.getEmail());
+    // 用授权码换取 Token（传递密码以便保存到 token 文件）
+    const tokenData = await oauthService.exchangeTokenAndSave(params.code, mailProvider.getEmail(), {
+        password: userData.password,
+    });
     return tokenData;
 }
 
@@ -848,6 +988,9 @@ async function startBatch() {
 }
 
 async function main() {
+    // 启动时合并两个数据目录的文件
+    mergeDataFiles();
+
     if (PHASE8_ONLY) {
         await startPhase8();
         return;

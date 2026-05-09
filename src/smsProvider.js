@@ -1,11 +1,39 @@
 const axios = require('axios');
 
+function formatHttpError(error) {
+    const status = error?.response?.status;
+    const data = error?.response?.data;
+
+    if (!status) {
+        return error.message;
+    }
+
+    if (!data || typeof data !== 'object') {
+        return `${status} ${error.message}`;
+    }
+
+    const parts = [`HTTP ${status}`];
+
+    if (data.title) {
+        parts.push(`title=${data.title}`);
+    }
+    if (data.details) {
+        parts.push(`details=${data.details}`);
+    }
+    if (data.info !== undefined) {
+        parts.push(`info=${JSON.stringify(data.info)}`);
+    }
+
+    return parts.join(' | ');
+}
+
 class SMSProvider {
     constructor(apiKey) {
         this.apiKey = apiKey;
         this.baseUrl = 'https://hero-sms.com/stubs/handler_api.php';
         this.activationId = null;
         this.phoneNumber = null;
+        this.sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     /**
@@ -23,20 +51,29 @@ class SMSProvider {
      * 获取手机号码（V2 接口，返回 JSON）
      * @param {string} service - 服务代码（OpenAI = 'dr'）
      * @param {number} country - 国家 ID（英国 = 16）
+     * @param {number} maxPrice - 可接受的最高价格
+     * @param {number} maxRetries - 最大重试次数
      * @returns {Promise<{activationId: number, phoneNumber: string}>}
      */
-    async getNumber(service = 'dr', country = 16, maxRetries = 5, heroSmsMaxPrice) {
+    async getNumber(service = 'dr', country = 16, maxPrice, maxRetries = 5) {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             let data;
             try {
-                data = await this.request('getNumberV2', { service, country, heroSmsMaxPrice});
+                data = await this.request('getNumberV2', { service, country, maxPrice });
             } catch (httpErr) {
-                console.log(`[SMS] API 请求失败: ${httpErr.message}，${attempt < maxRetries ? '5秒后重试...' : '已达最大重试次数'} (${attempt}/${maxRetries})`);
+                const errorDetails = formatHttpError(httpErr);
+                console.error(`[SMS] 获取号码请求失败: ${errorDetails}`);
+
+                if (httpErr?.response?.status === 422) {
+                    throw new Error(`HeroSMS 请求参数无效: ${errorDetails}`);
+                }
+
+                console.log(`[SMS] API 请求失败: ${errorDetails}，${attempt < maxRetries ? '5秒后重试...' : '已达最大重试次数'} (${attempt}/${maxRetries})`);
                 if (attempt < maxRetries) {
                     await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
-                throw new Error(`HeroSMS API 不可用: ${httpErr.message}`);
+                throw new Error(`HeroSMS API 不可用: ${errorDetails}`);
             }
 
             if (typeof data === 'string') {
@@ -101,11 +138,11 @@ class SMSProvider {
      * 轮询等待短信验证码
      * @param {object} options
      * @param {number} options.interval - 轮询间隔（毫秒，默认 5000）
-     * @param {number} options.maxAttempts - 最大尝试次数（默认 60 = 5分钟）
+     * @param {number} options.maxAttempts - 最大尝试次数（默认 26 = 130秒）
      * @returns {Promise<string>} 验证码
      */
     async pollForCode(options = {}) {
-        const { interval = 5000, maxAttempts = 60 } = options;
+        const { interval = 5000, maxAttempts = 26 } = options;
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             console.log(`[SMS] 等待短信验证码... (${attempt}/${maxAttempts})`);
@@ -120,10 +157,15 @@ class SMSProvider {
                 console.error(`[SMS] 查询状态出错: ${error.message}`);
             }
 
-            await new Promise(resolve => setTimeout(resolve, interval));
+            if (attempt < maxAttempts) {
+                await this.sleep(interval);
+            }
         }
 
-        throw new Error(`短信验证码超时（等待 ${(maxAttempts * interval) / 1000} 秒）`);
+        const timeoutSeconds = (maxAttempts * interval) / 1000;
+        console.error(`[SMS] 等待短信验证码超过 ${timeoutSeconds} 秒，取消当前号码`);
+        await this.cancel();
+        throw new Error(`短信验证码超时（等待 ${timeoutSeconds} 秒），已取消当前号码`);
     }
 
     /**

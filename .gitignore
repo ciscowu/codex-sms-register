@@ -21,3 +21,5 @@ node_modules/
 cli-proxy-api/
 docker/
 test/
+.ace-tool/
+.claude
