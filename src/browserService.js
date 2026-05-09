@@ -804,9 +804,11 @@ class BrowserService {
      * @param {string} opts.password - 密码
      * @param {string} opts.fullName - 全名
      * @param {string} opts.birthDate - 生日 (YYYY-MM-DD)
+     * @param {string} opts.dialCode - 拨号前缀 (如 '44')
+     * @param {string} opts.isoCode - ISO 国家代码 (如 'GB')
      */
     async loginAndCompleteProfile(opts) {
-        const { phone, password, fullName, birthDate } = opts;
+        const { phone, password, fullName, birthDate, dialCode = '', isoCode = '' } = opts;
 
         // 1. 导航到 chatgpt.com
         console.log('[Phase1.5] 导航到 chatgpt.com...');
@@ -845,8 +847,8 @@ class BrowserService {
 
         // 4. 输入手机号
         await this.waitFor('input[name="phoneNumberInput"]', 15000);
-        await this.selectCountry('44', '英国', 'GB');
-        const localNumber = phone.replace(/^\+44/, '');
+        await this.selectCountry(dialCode, '', isoCode);
+        const localNumber = dialCode ? phone.replace(new RegExp(`^\\+${dialCode}`), '') : phone.replace(/^\+/, '');
         await this.enterPhone(localNumber);
 
         // 5. 循环处理后续页面（密码、about-you、验证等）
@@ -980,6 +982,8 @@ class BrowserService {
             preferEmailOtp = false,
             useOneTimeCodeLogin = false,
             stopAfterEmailBound = false,
+            dialCode = '',
+            isoCode = '',
         } = opts;
         const shouldPreferEmailOtp = !!(preferEmailOtp || useOneTimeCodeLogin);
         const redirectBase = new URL(redirectUri);
@@ -1135,7 +1139,7 @@ class BrowserService {
 
                 // 尝试选国家（方法1: select，方法2: 按钮）
                 try {
-                    await this.selectCountry('44', '英国', 'GB');
+                    await this.selectCountry(dialCode, '', isoCode);
                 } catch (e) {}
 
                 // 找到手机号输入框
@@ -1155,11 +1159,11 @@ class BrowserService {
 
                     await input.click({ clickCount: 3 });
 
-                    if (currentCountry === '44') {
+                    if (currentCountry === dialCode) {
                         // 国家正确，只输入本地号码
-                        const localNumber = phone.replace(/^\+44/, '');
+                        const localNumber = dialCode ? phone.replace(new RegExp(`^\\+${dialCode}`), '') : phone.replace(/^\+/, '');
                         await input.type(localNumber, { delay: 50 });
-                        console.log(`[OAuth] 输入本地号码: ${localNumber} (国家 +44)`);
+                        console.log(`[OAuth] 输入本地号码: ${localNumber} (国家 +${dialCode})`);
                     } else {
                         // 国家不对，输入完整号码（去掉 + 号）
                         const fullNumber = phone.replace(/^\+/, '');

@@ -3,6 +3,7 @@ config.json
 
 # 账号数据
 accounts.json
+username.json
 
 # OAuth Token
 tokens/

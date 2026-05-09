@@ -484,9 +484,13 @@ async function phase1(smsProvider, browserService, userData) {
     let numberUsed = false;
 
     try {
-        // 3. 选择英国 +44 并输入手机号（去掉 +44 前缀）
-        await browserService.selectCountry('44', '英国', 'GB');
-        const localNumber = smsProvider.getPhone().replace(/^\+44/, '');
+        // 3. 根据 heroSmsCountry 动态选择国家并输入手机号
+        const countryInfo = smsProvider.getCountryInfo(config.heroSmsCountry);
+        const dialCode = countryInfo ? countryInfo.dial : SMSProvider.extractDialCode(smsProvider.getPhone());
+        const isoCode = countryInfo ? countryInfo.iso : '';
+        const countryName = countryInfo ? '' : '';
+        await browserService.selectCountry(dialCode, countryName, isoCode);
+        const localNumber = smsProvider.getPhoneLocal();
         await browserService.enterPhone(localNumber);
         numberUsed = true;
 
@@ -529,11 +533,14 @@ async function phase1_5(smsProvider, browserService, userData) {
     console.log('[阶段1.5] 首次登录 chatgpt.com 完成个人资料');
     console.log('=========================================');
 
+    const countryInfo1_5 = smsProvider.getCountryInfo(config.heroSmsCountry);
     await browserService.loginAndCompleteProfile({
         phone: smsProvider.getPhone(),
         password: userData.password,
         fullName: userData.fullName,
         birthDate: userData.birthDate,
+        dialCode: countryInfo1_5 ? countryInfo1_5.dial : '',
+        isoCode: countryInfo1_5 ? countryInfo1_5.iso : '',
     });
 
     console.log('[阶段1.5] 完成！');
@@ -558,6 +565,7 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
 
     // 3. 导航到 OAuth 页面并完成邮箱绑定
     await browserService.navigateToOAuth(bindEmailAuthUrl);
+    const countryInfo2 = smsProvider.getCountryInfo(config.heroSmsCountry);
     await browserService.oauthLoginAndAuthorize({
         loginMethod: 'phone',
         stopAfterEmailBound: true,
@@ -568,6 +576,8 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
         age: userData.age,
         birthDate: userData.birthDate,
         redirectUri: oauthService.redirectUri,
+        dialCode: countryInfo2 ? countryInfo2.dial : '',
+        isoCode: countryInfo2 ? countryInfo2.iso : '',
         onSmsNeeded: async () => {
             console.log('[阶段2]（绑定邮箱）需要 SMS 验证码...');
             return await smsProvider.pollForCode({ interval: SMS_POLL_INTERVAL, maxAttempts: SMS_MAX_ATTEMPTS });
@@ -605,6 +615,7 @@ async function phase3(smsProvider, mailProvider, browserService, oauthService, u
     await browserService.navigateToOAuth(authUrl);
 
     // 一站式登录 + 授权（邮箱登录）
+    const countryInfo3 = smsProvider.getCountryInfo(config.heroSmsCountry);
     const callbackUrl = await browserService.oauthLoginAndAuthorize({
         loginMethod: 'email',
         phone: smsProvider.getPhone(),
@@ -614,6 +625,8 @@ async function phase3(smsProvider, mailProvider, browserService, oauthService, u
         age: userData.age,
         birthDate: userData.birthDate,
         redirectUri: oauthService.redirectUri,
+        dialCode: countryInfo3 ? countryInfo3.dial : '',
+        isoCode: countryInfo3 ? countryInfo3.iso : '',
         onSmsNeeded: async () => {
             console.log('[阶段3] 需要 SMS 验证码...');
             return await smsProvider.pollForCode({ interval: SMS_POLL_INTERVAL, maxAttempts: SMS_MAX_ATTEMPTS });
