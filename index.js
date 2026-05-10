@@ -415,6 +415,37 @@ function updateAccountStatus(phone, status) {
     }
 }
 
+/**
+ * 更新账号邮箱（Phase 2 绑定邮箱后调用）
+ */
+function updateAccountEmail(phone, email) {
+    if (!fs.existsSync(ACCOUNTS_FILE)) return;
+    const accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+    const account = accounts.find(a => a.phone === phone);
+    if (account) {
+        account.email = email;
+        ensureParentDir(ACCOUNTS_FILE);
+        fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+        console.log(`[账号] 已更新邮箱: ${phone} -> ${email}`);
+
+        // 双写
+        const altDir = getAlternateDataDir();
+        const altAccounts = path.join(altDir, 'accounts.json');
+        if (path.resolve(ACCOUNTS_FILE) !== path.resolve(altAccounts)) {
+            let altAccountsList = [];
+            if (fs.existsSync(altAccounts)) {
+                try { altAccountsList = JSON.parse(fs.readFileSync(altAccounts, 'utf8')); } catch (e) {}
+            }
+            const altAccount = altAccountsList.find(a => a.phone === phone);
+            if (altAccount) {
+                altAccount.email = email;
+            }
+            ensureParentDir(altAccounts);
+            fs.writeFileSync(altAccounts, JSON.stringify(altAccountsList, null, 2));
+        }
+    }
+}
+
 function saveUsernameFile({ email, phone, password, name, birthDate, status }) {
     const account = findAccountByPhone(phone);
     const outData = {
@@ -589,8 +620,10 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
     });
     console.log('[阶段2] 临时邮箱绑定完成');
 
+    // 优先使用 consent 页面读到的邮箱（权威来源），其次用 mailProvider 的
+    const consentEmail = browserService._consentEmail || null;
     return {
-        email: mailProvider.getEmail(),
+        email: consentEmail || mailProvider.getEmail(),
     };
 }
 
@@ -633,7 +666,7 @@ async function phase3(smsProvider, mailProvider, browserService, oauthService, u
         },
         onEmailCodeNeeded: async () => {
             console.log('[阶段3] 需要邮箱验证码...');
-            return await pollEmailCode(mailProvider);
+            return await pollEmailCodeByAddress(mailProvider, mailProvider.getEmail());
         },
     });
 
@@ -717,6 +750,8 @@ async function runSingleRegistration() {
             await phase1_5(smsProvider, browserService, userData);
 
             const phase2Data = await phase2(smsProvider, mailProvider, browserService, oauthService, userData);
+            mailProvider.address = phase2Data.email;
+            updateAccountEmail(account.phone, phase2Data.email);
             saveUsernameFile({
                 email: phase2Data.email,
                 phone: account.phone,
@@ -745,6 +780,8 @@ async function runSingleRegistration() {
 
         // 2. 第二阶段：手机号登录并绑定临时邮箱
         const phase2Data = await phase2(smsProvider, mailProvider, browserService, oauthService, userData);
+        mailProvider.address = phase2Data.email;
+        updateAccountEmail(smsProvider.getPhone(), phase2Data.email);
         saveUsernameFile({
             email: phase2Data.email,
             phone: smsProvider.getPhone(),

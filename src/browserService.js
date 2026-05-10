@@ -699,6 +699,21 @@ class BrowserService {
                 return true;
             }
 
+            // 手机号已注册错误（"与此电话号码相关联的帐户已存在"）
+            if (url.includes('create-account') || url.includes('password')) {
+                const accountExists = await this.page.evaluate(() => {
+                    const errorEl = document.querySelector('._errors_1wcdi_17') || document.querySelector('[role="alert"]');
+                    if (errorEl) {
+                        const t = errorEl.innerText || '';
+                        if (/帐户已存在|account.*already.*exists|已.*关联/i.test(t)) return t.trim();
+                    }
+                    return null;
+                }).catch(() => null);
+                if (accountExists) {
+                    throw new Error(`手机号已注册: ${accountExists}`);
+                }
+            }
+
             // about-you 页面：全名 + 年龄/生日
             
             if (url.includes('about-you') || url.includes('about_you')) {
@@ -715,6 +730,28 @@ class BrowserService {
                 await this.page.type('input[type="password"]', userData.password, { delay: 30 });
                 await SLEEP(500);
                 await this.clickSubmitButton();
+                await SLEEP(3000);
+
+                // 检测密码错误（页面通常保持同一 URL）
+                const pwdErr = await this.page.evaluate(() => {
+                    // 精确检测：密码输入框被标记为 invalid
+                    if (document.querySelector('input[type="password"][data-invalid="true"]')) return true;
+                    // [role="alert"] 中包含密码错误关键词
+                    const alert = document.querySelector('[role="alert"]');
+                    if (alert) {
+                        const t = alert.innerText || '';
+                        if (/incorrect|不正确|密码/i.test(t)) return true;
+                    }
+                    return false;
+                }).catch(() => false);
+                if (pwdErr) {
+                    const errorText = await this.page.evaluate(() => {
+                        const errEl = document.querySelector('[role="alert"]') || document.querySelector('input[type="password"][data-invalid="true"]');
+                        return errEl?.innerText || errEl?.getAttribute('aria-describedby') || '';
+                    }).catch(() => '');
+                    throw new Error(`密码错误: ${errorText.trim().substring(0, 100)}`);
+                }
+
                 lastHandledUrl = url;
                 continue;
             }
@@ -897,6 +934,23 @@ class BrowserService {
                 }
             }
 
+            // 错误/重试检测（URL 可能不变，需在 lastHandledUrl 守卫之前）
+            const hasError = pageState.text.includes('出错了') || pageState.text.includes('went wrong')
+                || pageState.text.includes('Try again') || pageState.text.includes('something went wrong')
+                || pageState.text.includes('请重试') || pageState.text.includes('再试一次');
+            const hasRetryBtn = pageState.btns.some(b => /重试|retry|try again/i.test(b));
+            if (hasError || hasRetryBtn) {
+                console.log(`[Phase1.5] Round ${round}: 检测到错误页面，尝试重试...`);
+                if (hasRetryBtn) {
+                    try { await this.clickButtonByText(['重试', 'Retry', 'Try again'], 3000); } catch (e) {}
+                    await SLEEP(3000);
+                    await this.waitForCloudflare(30000);
+                    await SLEEP(3000);
+                }
+                lastHandledUrl = '';
+                continue;
+            }
+
             if (url === lastHandledUrl) continue;
 
             // 密码页
@@ -906,6 +960,25 @@ class BrowserService {
                 await SLEEP(500);
                 await this.clickSubmitButton();
                 await SLEEP(3000);
+
+                // 检测密码错误（页面通常保持同一 URL）
+                const pwdErr15 = await this.page.evaluate(() => {
+                    if (document.querySelector('input[type="password"][data-invalid="true"]')) return true;
+                    const alert = document.querySelector('[role="alert"]');
+                    if (alert) {
+                        const t = alert.innerText || '';
+                        if (/incorrect|不正确|密码/i.test(t)) return true;
+                    }
+                    return false;
+                }).catch(() => false);
+                if (pwdErr15) {
+                    const errorText = await this.page.evaluate(() => {
+                        const errEl = document.querySelector('[role="alert"]') || document.querySelector('input[type="password"][data-invalid="true"]');
+                        return errEl?.innerText || errEl?.getAttribute('aria-describedby') || '';
+                    }).catch(() => '');
+                    throw new Error(`密码错误: ${errorText.trim().substring(0, 100)}`);
+                }
+
                 await this.waitForCloudflare(60000);
                 await SLEEP(3000);
                 lastHandledUrl = url;
@@ -1031,6 +1104,10 @@ class BrowserService {
 
             // 检查通过 request 事件捕获的回调 URL
             if (capturedCallbackUrl) {
+                if (stopAfterEmailBound) {
+                    console.log('[OAuth] 检测到回调但 stopAfterEmailBound=true，视为邮箱绑定完成');
+                    return 'EMAIL_BOUND';
+                }
                 console.log('[OAuth] 检测到 localhost 回调！');
                 return capturedCallbackUrl;
             }
@@ -1042,6 +1119,10 @@ class BrowserService {
                     && current.port === redirectBase.port
                     && current.pathname === redirectBase.pathname
                     && (current.searchParams.has('code') || current.searchParams.has('error'))) {
+                    if (stopAfterEmailBound) {
+                        console.log('[OAuth] URL 匹配回调但 stopAfterEmailBound=true，视为邮箱绑定完成');
+                        return 'EMAIL_BOUND';
+                    }
                     console.log('[OAuth] 检测到 localhost 回调（URL 匹配）！');
                     return url;
                 }
@@ -1049,10 +1130,22 @@ class BrowserService {
 
             // chrome-error 页面说明跳转到了 localhost 但连接失败，回调已在 request 事件中捕获
             if (url.includes('chrome-error')) {
-                if (capturedCallbackUrl) return capturedCallbackUrl;
+                if (capturedCallbackUrl) {
+                    if (stopAfterEmailBound) {
+                        console.log('[OAuth] chrome-error 回调但 stopAfterEmailBound=true，视为邮箱绑定完成');
+                        return 'EMAIL_BOUND';
+                    }
+                    return capturedCallbackUrl;
+                }
                 // 等一下可能 request 事件还没触发
                 await SLEEP(2000);
-                if (capturedCallbackUrl) return capturedCallbackUrl;
+                if (capturedCallbackUrl) {
+                    if (stopAfterEmailBound) {
+                        console.log('[OAuth] chrome-error 回调(延迟)但 stopAfterEmailBound=true，视为邮箱绑定完成');
+                        return 'EMAIL_BOUND';
+                    }
+                    return capturedCallbackUrl;
+                }
             }
 
             // 0. 错误页面检测（「糟糕，出错了！」/ 「重试」）— URL 可能不变，需优先检测
@@ -1071,6 +1164,69 @@ class BrowserService {
                     lastHandledUrl = ''; // 重置，允许重新匹配
                     continue;
                 }
+            }
+
+            // 0.5 邮箱验证成功页面（URL 不变但内容已更新）
+            if (url.includes('email-verification')
+                && (pageInfo.text.includes('已验证') || pageInfo.text.includes('verified'))) {
+                console.log(`[OAuth] Round ${round}: 邮箱验证成功`);
+                emailBound = true;
+                if (stopAfterEmailBound) {
+                    return 'EMAIL_BOUND';
+                }
+                // 非 stopAfterEmailBound 模式：点继续按钮推进 OAuth 流程
+                try { await this.clickButtonByText(['继续', 'Continue'], 3000); } catch (e) {}
+                lastHandledUrl = url;
+                continue;
+            }
+
+            // 0.6 consent 页面（邮箱已绑定的标志，独立于 emailBound 状态）
+            if (url.includes('/consent')) {
+                console.log(`[OAuth] Round ${round}: 检测到 consent 页面（邮箱已绑定）`);
+                emailBound = true;
+                // 从 consent 页面的 usernameChip 元素中提取实际绑定的邮箱地址
+                const consentEmail = await this.page.evaluate(() => {
+                    // 精确匹配：usernameChip 容器内的 span 文本
+                    const chip = document.querySelector('[class*="usernameChip"]');
+                    if (chip) {
+                        const span = chip.querySelector('span');
+                        if (span) return span.textContent.trim();
+                    }
+                    // 兜底：页面文本中的邮箱
+                    const text = document.body?.innerText || '';
+                    const match = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+                    return match ? match[0] : null;
+                }).catch(() => null);
+                if (consentEmail) {
+                    console.log(`[OAuth] consent 页面邮箱: ${consentEmail}`);
+                }
+                if (stopAfterEmailBound) {
+                    this._consentEmail = consentEmail || null;
+                    return 'EMAIL_BOUND';
+                }
+                // 非 stopAfterEmailBound 模式：点击同意按钮继续完成 OAuth 授权
+                console.log('[OAuth] consent 页面: 点击同意按钮...');
+                const clicked = await this.page.evaluate(() => {
+                    const skipWords = ['Google', 'Apple', 'Microsoft', 'email', 'phone', '邮件', '邮箱', '手机'];
+                    for (const b of document.querySelectorAll('button')) {
+                        const text = b.innerText.trim();
+                        if (!text || text.length > 15) continue;
+                        if (skipWords.some(w => text.toLowerCase().includes(w.toLowerCase()))) continue;
+                        if (['Allow', '授权', '允许', '同意', 'Continue', '继续'].some(t => text.includes(t))) {
+                            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+                                b.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+                            });
+                            return text;
+                        }
+                    }
+                    return null;
+                });
+                if (clicked) {
+                    console.log(`[OAuth] consent: 点击了「${clicked}」`);
+                }
+                await SLEEP(5000);
+                lastHandledUrl = url;
+                continue;
             }
 
             if (url === lastHandledUrl) {
@@ -1321,7 +1477,26 @@ class BrowserService {
                 } else {
                     await this.clickSubmitButton();
                 }
-                await SLEEP(5000);
+                await SLEEP(3000);
+
+                // 检测密码错误（页面通常保持同一 URL，不触发 Cloudflare）
+                const pwdErrorAfterSubmit = await this.page.evaluate(() => {
+                    if (document.querySelector('input[type="password"][data-invalid="true"]')) return true;
+                    const alert = document.querySelector('[role="alert"]');
+                    if (alert) {
+                        const t = alert.innerText || '';
+                        if (/incorrect|不正确|密码/i.test(t)) return true;
+                    }
+                    return false;
+                }).catch(() => false);
+                if (pwdErrorAfterSubmit) {
+                    const errorText = await this.page.evaluate(() => {
+                        const errEl = document.querySelector('[role="alert"]') || document.querySelector('input[type="password"][data-invalid="true"]');
+                        return errEl?.innerText || errEl?.getAttribute('aria-describedby') || '';
+                    }).catch(() => '');
+                    throw new Error(`密码错误: ${errorText.trim().substring(0, 100)}`);
+                }
+
                 await this.waitForCloudflare(30000);
                 await SLEEP(3000);
                 lastHandledUrl = url;
