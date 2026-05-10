@@ -1105,6 +1105,43 @@ class BrowserService {
                 continue;
             }
 
+            // 1.2 账户选择页（choose-an-account）— 点击已有账户继续
+            if (url.includes('choose-an-account')
+                || (pageInfo.text.includes('欢迎回来') && pageInfo.text.includes('选择一个帐户'))
+                || (pageInfo.text.includes('Welcome back') && pageInfo.text.includes('Choose an account'))) {
+                console.log('[OAuth] 检测到账户选择页，点击账户继续...');
+                // 点击包含电话号码的按钮（即账户条目）
+                const clicked = await this.page.evaluate((dialCode) => {
+                    for (const btn of document.querySelectorAll('button')) {
+                        const text = btn.innerText || '';
+                        if (/\+\d/.test(text) && text.includes(dialCode)) {
+                            btn.click();
+                            return text.trim().substring(0, 80);
+                        }
+                    }
+                    // 备用：点击第一个包含 + 号的按钮
+                    for (const btn of document.querySelectorAll('button')) {
+                        const text = btn.innerText || '';
+                        if (/\+\d/.test(text)) {
+                            btn.click();
+                            return text.trim().substring(0, 80);
+                        }
+                    }
+                    return null;
+                }, dialCode || '');
+
+                if (clicked) {
+                    console.log(`[OAuth] 已点击账户: ${clicked}`);
+                } else {
+                    console.log('[OAuth] 未找到账户按钮，尝试点击第一个按钮...');
+                    try { await this.clickButtonByText(/.+/, 3000); } catch (e) {}
+                }
+                await SLEEP(3000);
+                await this.waitForCloudflare(15000);
+                lastHandledUrl = '';
+                continue;
+            }
+
             // 1.5 邮箱输入页
             const hasEmailForm = pageInfo.inputs.some(i =>
                 i.type === 'email' || i.name === 'email' || i.name === 'username' || i.name === 'identifier'
