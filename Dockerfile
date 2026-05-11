@@ -8,6 +8,7 @@ RUN apt-get update \
         curl \
         fonts-liberation \
         fonts-noto-color-emoji \
+        fonts-noto-cjk \
         gnupg \
         libasound2 \
         libatk-bridge2.0-0 \
