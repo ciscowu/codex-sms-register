@@ -208,8 +208,10 @@ class BrowserService {
      * 截图（调试用）
      */
     async screenshot(filename) {
-        await this.page.screenshot({ path: `/tmp/${filename}` });
-        console.log(`[Browser] 截图: /tmp/${filename}`);
+        const fs = require('fs');
+        const dir = fs.existsSync('/app/screenshots') ? '/app/screenshots' : '/tmp';
+        await this.page.screenshot({ path: `${dir}/${filename}` });
+        console.log(`[Browser] 截图: ${dir}/${filename}`);
     }
 
     /**
@@ -663,6 +665,7 @@ class BrowserService {
     async completeProfile(userData, onSmsNeeded) {
         console.log('[Browser] 开始填写注册资料...');
         let lastHandledUrl = '';
+        let passwordFilled = false;
 
         for (let round = 0; round < 20; round++) {
             await SLEEP(3000);
@@ -672,8 +675,8 @@ class BrowserService {
                 pageState = await this.page.evaluate(() => {
                     const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
                     return {
-                        inputs: inputs.map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder, id: i.id })),
-                        text: (document.body.innerText || '').substring(0, 800),
+                        inputs: inputs.map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder, id: i.id, value: i.value })),
+                        text: (document.body.innerText || '').substring(0, 1200),
                         url: location.href,
                     };
                 });
@@ -685,20 +688,7 @@ class BrowserService {
 
             const url = pageState.url;
 
-            // 如果页面没变化，跳过（防止重复操作）
-            if (url === lastHandledUrl) {
-                console.log(`[Browser] Round ${round}: 页面未变化，等待...`);
-                continue;
-            }
-
-            console.log(`[Browser] Round ${round}: ${url.substring(0, 70)}, inputs=${pageState.inputs.length}`);
-
-            // 完成：到达 ChatGPT 主页 或 about-you 后续页面
-            if (url.includes('chatgpt.com') && !url.includes('auth.openai.com')) {
-                console.log('[Browser] 注册完成，已到达 ChatGPT！');
-                return true;
-            }
-
+            // 错误检测（URL 可能不变，需在 lastHandledUrl 守卫之前）
             // 手机号已注册错误（"与此电话号码相关联的帐户已存在"）
             if (url.includes('create-account') || url.includes('password')) {
                 const accountExists = await this.page.evaluate(() => {
@@ -714,8 +704,94 @@ class BrowserService {
                 }
             }
 
+            // 密码错误检测（data-invalid 属性）
+            if (url.includes('password')) {
+                const pwdErr = await this.page.evaluate(() => {
+                    if (document.querySelector('input[type="password"][data-invalid="true"]')) return true;
+                    const alert = document.querySelector('[role="alert"]');
+                    if (alert) {
+                        const t = alert.innerText || '';
+                        if (/incorrect|不正确|密码/i.test(t)) return true;
+                    }
+                    return false;
+                }).catch(() => false);
+                if (pwdErr) {
+                    const errorText = await this.page.evaluate(() => {
+                        const errEl = document.querySelector('[role="alert"]') || document.querySelector('input[type="password"][data-invalid="true"]');
+                        return errEl?.innerText || '';
+                    }).catch(() => '');
+                    throw new Error(`密码错误: ${errorText.trim().substring(0, 100)}`);
+                }
+            }
+
+            // OpenAI 服务端错误页面检测（"糟糕，出错了！" / "Operation timed out"）
+            const openAiError = await this.page.evaluate(() => {
+                const text = document.body?.innerText || '';
+                if (/糟糕|出错了|timed out|something went wrong/i.test(text)) {
+                    return text.substring(0, 200);
+                }
+                return null;
+            }).catch(() => null);
+            if (openAiError) {
+                console.log(`[Browser] Round ${round}: OpenAI 错误页面: ${openAiError}`);
+                await this.screenshot(`completeProfile-ai-error-round${round}.png`);
+                // 尝试点击重试按钮
+                const retried = await this.page.evaluate(() => {
+                    for (const b of document.querySelectorAll('button')) {
+                        const t = b.innerText.trim();
+                        if (['重试', 'Retry', '再试一次', 'Try again'].some(k => t.includes(k))) {
+                            b.click();
+                            return t;
+                        }
+                    }
+                    return null;
+                });
+                if (retried) {
+                    console.log(`[Browser] 点击了「${retried}」，等待重试...`);
+                    await SLEEP(5000);
+                } else {
+                    throw new Error(`OpenAI 服务端错误: ${openAiError}`);
+                }
+                lastHandledUrl = '';
+                continue;
+            }
+
+            // 如果页面没变化，截图诊断后跳过
+            if (url === lastHandledUrl) {
+                await this.screenshot(`completeProfile-stuck-round${round}.png`);
+                const pageInfo = await this.page.evaluate(() => {
+                    const errorSelectors = [
+                        '[role="alert"]', '._errors_1wcdi_17', '[data-invalid="true"]',
+                        '.error', '[class*="error"]', '[class*="Error"]',
+                    ];
+                    const errors = [];
+                    for (const sel of errorSelectors) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const t = (el.innerText || '').trim();
+                            if (t && t.length < 200) errors.push(`[${sel}] ${t}`);
+                        }
+                    }
+                    const pwdInput = document.querySelector('input[type="password"]');
+                    return {
+                        errors,
+                        pwdValue: pwdInput ? (pwdInput.value ? '(有值)' : '(空)') : null,
+                    };
+                }).catch(() => ({}));
+                console.log(`[Browser] Round ${round}: 页面未变化，诊断:`, JSON.stringify(pageInfo));
+                continue;
+            }
+
+            console.log(`[Browser] Round ${round}: ${url.substring(0, 70)}, inputs=${pageState.inputs.length}`);
+            await this.screenshot(`completeProfile-round${round}.png`);
+
+            // 完成：到达 ChatGPT 主页 或 about-you 后续页面
+            if (url.includes('chatgpt.com') && !url.includes('auth.openai.com')) {
+                console.log('[Browser] 注册完成，已到达 ChatGPT！');
+                return true;
+            }
+
             // about-you 页面：全名 + 年龄/生日
-            
+
             if (url.includes('about-you') || url.includes('about_you')) {
                 console.log('[Browser] 到达 about-you 页面...');
                 await this.fillAboutYouAndSubmit(userData.fullName, userData.age, userData.birthDate, '[Phase1]');
@@ -726,8 +802,19 @@ class BrowserService {
 
             // 密码页
             if (url.includes('password') || pageState.inputs.some(i => i.type === 'password')) {
+                // 先检查密码是否已填写（避免重复追加）
+                const pwdInput = pageState.inputs.find(i => i.type === 'password');
+                if (passwordFilled && pwdInput?.value) {
+                    console.log('[Browser] 密码已填写，直接点击提交...');
+                    await this.clickSubmitButton();
+                    await SLEEP(3000);
+                    lastHandledUrl = url;
+                    continue;
+                }
+
                 console.log('[Browser] 填写密码...');
                 await this.page.type('input[type="password"]', userData.password, { delay: 30 });
+                passwordFilled = true;
                 await SLEEP(500);
                 await this.clickSubmitButton();
                 await SLEEP(3000);

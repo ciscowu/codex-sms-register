@@ -8,4 +8,5 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./data:/app/data
+      - ./screenshots:/app/screenshots
     command: ["1"]
