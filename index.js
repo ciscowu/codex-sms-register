@@ -586,7 +586,7 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
     console.log('=========================================');
 
     // 1. 创建临时邮箱
-    await mailProvider.createAddress();
+    await mailProvider.createAddress(null, userData.fullName);
     console.log(`[阶段2] 邮箱: ${mailProvider.getEmail()}`);
 
     // 2. 第一轮：手机号登录并绑定临时邮箱（不取 token）
@@ -821,6 +821,11 @@ async function runSingleRegistration() {
 
     } catch (error) {
         console.error('[主程序] 本次任务执行失败:', error.message);
+        // 打印 axios 响应详情帮助定位 400 等 HTTP 错误
+        if (error?.response) {
+            console.error(`[主程序] HTTP ${error.response.status}: ${JSON.stringify(error.response.data || '').substring(0, 500)}`);
+            console.error(`[主程序] 请求 URL: ${error?.config?.url || 'unknown'}`);
+        }
         throw error;
     } finally {
         await browserService.close();
