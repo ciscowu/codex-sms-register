@@ -41,6 +41,13 @@ class MailProvider {
         return headers;
     }
 
+    /**
+     * 构建 axios 请求配置（禁用系统代理，避免代理篡改请求体）
+     */
+    _axiosConfig(overrides = {}) {
+        return { proxy: false, timeout: 15000, ...overrides };
+    }
+
     _normalizeAddress(address) {
         return String(address || '').trim().toLowerCase();
     }
@@ -103,7 +110,24 @@ class MailProvider {
     }
 
     /**
-     * 生成随机邮箱用户名
+     * 从全名生成邮箱用户名
+     * @param {string} fullName - 全名，如 "Ingrid Venezia"
+     * @returns {string} 邮箱用户名，如 "ingrid.venezia2026"
+     */
+    _nameToEmail(fullName) {
+        const parts = fullName.trim().toLowerCase().split(/\s+/);
+        const first = parts[0] || '';
+        const last = parts.slice(1).join('') || '';
+        const digits = String(randomInt(9000) + 1000); // 4位随机数字
+        // ingrid.venezia2026 或 ivenezia1234
+        if (last) {
+            return `${first}${last}${digits}`;
+        }
+        return `${first}${digits}`;
+    }
+
+    /**
+     * 生成随机邮箱用户名（兜底）
      */
     _randomName() {
         const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -118,25 +142,44 @@ class MailProvider {
     /**
      * 创建新邮箱地址
      * @param {string|null} name - 邮箱用户名，null 则随机生成
+     * @param {string|null} fullName - 全名，用于生成邮箱用户名
      * @returns {Promise<{jwt: string, address: string, addressId: number}>}
      */
-    async createAddress(name = null) {
-        const emailName = name || this._randomName();
+    async createAddress(name = null, fullName = null) {
+        const emailName = name || (fullName ? this._nameToEmail(fullName) : this._randomName());
 
-        const response = await axios.post(
-            `${this.baseUrl}/admin/new_address`,
-            { name: emailName, domain: this.domain, enablePrefix: false },
-            { headers: this._adminHeaders(), timeout: 15000 }
-        );
+        try {
+            const response = await axios.post(
+                `${this.baseUrl}/admin/new_address`,
+                { name: emailName, domain: this.domain, enablePrefix: false },
+                this._axiosConfig({
+                    headers: this._adminHeaders(),
+                    transformResponse: [(raw) => {
+                        try { return JSON.parse(raw); } catch { return raw; }
+                    }],
+                })
+            );
 
-        const data = response.data;
-        this.jwt = data.jwt;
-        this.address = data.address;
-        this.addressId = data.address_id;
-        this._cacheCurrentSession();
+            const data = typeof response.data === 'string'
+                ? (() => { throw new Error(`服务端返回非 JSON: ${response.data.substring(0, 300)}`); })()
+                : response.data;
 
-        console.log(`[Mail] 创建邮箱: ${this.address}`);
-        return { jwt: this.jwt, address: this.address, addressId: this.addressId };
+            this.jwt = data.jwt;
+            this.address = data.address;
+            this.addressId = data.address_id;
+            this._cacheCurrentSession();
+
+            console.log(`[Mail] 创建邮箱: ${this.address}`);
+            return { jwt: this.jwt, address: this.address, addressId: this.addressId };
+        } catch (error) {
+            const status = error?.response?.status;
+            const rawBody = error?.response?.data;
+            console.error(`[Mail] 创建邮箱失败: HTTP ${status}`);
+            console.error(`[Mail] 响应原文: ${String(rawBody || '').substring(0, 500)}`);
+            console.error(`[Mail] 请求 URL: ${this.baseUrl}/admin/new_address`);
+            console.error(`[Mail] 请求体: ${JSON.stringify({ name: emailName, domain: this.domain })}`);
+            throw error;
+        }
     }
 
     /**
@@ -181,15 +224,29 @@ class MailProvider {
      * @returns {Promise<Array>}
      */
     async getMails(limit = 10, offset = 0) {
-        const response = await axios.get(
-            `${this.baseUrl}/api/mails`,
-            {
-                params: { limit, offset },
-                headers: this._addressHeaders(),
-                timeout: 15000,
+        try {
+            const response = await axios.get(
+                `${this.baseUrl}/api/mails`,
+                this._axiosConfig({
+                    params: { limit, offset },
+                    headers: this._addressHeaders(),
+                    transformResponse: [(raw) => {
+                        try { return JSON.parse(raw); } catch { return raw; }
+                    }],
+                })
+            );
+            if (typeof response.data === 'string') {
+                console.error(`[Mail] 获取邮件: 服务端返回非 JSON: ${response.data.substring(0, 300)}`);
+                return [];
             }
-        );
-        return response.data.results || [];
+            return response.data.results || [];
+        } catch (error) {
+            const status = error?.response?.status;
+            const rawBody = error?.response?.data;
+            console.error(`[Mail] 获取邮件失败: HTTP ${status}`);
+            console.error(`[Mail] 响应原文: ${String(rawBody || '').substring(0, 500)}`);
+            throw error;
+        }
     }
 
     async _tryCreateAddressSession(address) {
@@ -227,14 +284,17 @@ class MailProvider {
 
         for (const candidate of candidates) {
             try {
-                const response = await axios({
+                const response = await axios(this._axiosConfig({
                     method: candidate.method,
                     url: `${this.baseUrl}${candidate.url}`,
                     params: candidate.params,
                     data: candidate.data,
                     headers: this._adminHeaders(),
-                    timeout: 15000,
-                });
+                    transformResponse: [(raw) => {
+                        try { return JSON.parse(raw); } catch { return raw; }
+                    }],
+                }));
+                if (typeof response.data === 'string') continue;
                 const session = this._extractSessionFromPayload(response.data, address);
                 if (session && this._normalizeAddress(session.address) === this._normalizeAddress(address)) {
                     this.useExistingAddressSession(session);
@@ -260,14 +320,17 @@ class MailProvider {
         let lastError = null;
         for (const candidate of candidates) {
             try {
-                const response = await axios({
+                const response = await axios(this._axiosConfig({
                     method: candidate.method,
                     url: `${this.baseUrl}${candidate.url}`,
                     params: candidate.params,
                     data: candidate.data,
                     headers: this._adminHeaders(),
-                    timeout: 15000,
-                });
+                    transformResponse: [(raw) => {
+                        try { return JSON.parse(raw); } catch { return raw; }
+                    }],
+                }));
+                if (typeof response.data === 'string') continue;
                 const mails = this._extractMailsFromPayload(response.data);
                 if (Array.isArray(mails)) {
                     return mails;
