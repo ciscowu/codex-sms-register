@@ -1,8 +1,13 @@
 const axios = require('axios');
 const { randomInt } = require('node:crypto');
+const { OmrMailProvider } = require('./omrMailProvider');
 
 class MailProvider {
     constructor(options) {
+        this.provider = String(options.provider || options.mailProvider || 'cloudflare').trim().toLowerCase() || 'cloudflare';
+        this.omrmailProvider = this.provider === 'omrmail'
+            ? new OmrMailProvider(options.omrmail || {})
+            : null;
         this.baseUrl = options.baseUrl;
         this.adminPassword = options.adminPassword;
         this.sitePassword = options.sitePassword || '';
@@ -146,6 +151,13 @@ class MailProvider {
      * @returns {Promise<{jwt: string, address: string, addressId: number}>}
      */
     async createAddress(name = null, fullName = null) {
+        if (this.omrmailProvider) {
+            const result = await this.omrmailProvider.createAddress(name, fullName);
+            this.address = result.address;
+            this.addressId = result.addressId;
+            return result;
+        }
+
         const emailName = name || (fullName ? this._nameToEmail(fullName) : this._randomName());
 
         try {
@@ -206,6 +218,9 @@ class MailProvider {
      * @returns {string}
      */
     getInboxUrl() {
+        if (this.omrmailProvider) {
+            return this.omrmailProvider.getInboxUrl();
+        }
         return `${this.baseUrl}/?jwt=${this.jwt}`;
     }
 
@@ -214,6 +229,9 @@ class MailProvider {
      * @returns {string}
      */
     getEmail() {
+        if (this.omrmailProvider) {
+            return this.address || this.omrmailProvider.getEmail();
+        }
         return this.address;
     }
 
@@ -224,6 +242,10 @@ class MailProvider {
      * @returns {Promise<Array>}
      */
     async getMails(limit = 10, offset = 0) {
+        if (this.omrmailProvider) {
+            return await this.omrmailProvider.getMailsByAddress(this.getEmail(), limit, offset);
+        }
+
         try {
             const response = await axios.get(
                 `${this.baseUrl}/api/mails`,
@@ -355,6 +377,10 @@ class MailProvider {
             throw new Error('email is empty');
         }
 
+        if (this.omrmailProvider) {
+            return await this.omrmailProvider.getMailsByAddress(normalized, limit, offset);
+        }
+
         if (this._normalizeAddress(this.address) === normalized && this.jwt) {
             return await this.getMails(limit, offset);
         }
@@ -369,6 +395,33 @@ class MailProvider {
         }
 
         return await this._fetchMailsByAdmin(normalized, limit, offset);
+    }
+
+    async _markOmrMail(address, method, label) {
+        if (!this.omrmailProvider) return false;
+        const email = address || this.getEmail();
+        try {
+            return await this.omrmailProvider[method](email);
+        } catch (error) {
+            console.warn(`[Mail][OMR] ${label}失败: ${error.message}`);
+            return false;
+        }
+    }
+
+    async markClaimed(address = null) {
+        return await this._markOmrMail(address, 'markClaimed', '标记邮箱已使用');
+    }
+
+    async markAbnormal(address = null) {
+        return await this._markOmrMail(address, 'markAbnormal', '标记邮箱异常');
+    }
+
+    async markAuthenticated(address = null) {
+        return await this._markOmrMail(address, 'markAuthenticated', '标记邮箱已认证');
+    }
+
+    async markRegistered(address = null) {
+        return await this.markAuthenticated(address);
     }
 }
 

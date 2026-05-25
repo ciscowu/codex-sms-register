@@ -30,44 +30,62 @@
 
 ## 配置文件
 
-程序读取仓库根目录的 `config.json`。
+程序按顺序读取仓库根目录的 `config.yaml`、`config.yml`、`config.json`。推荐使用 YAML；可以写 `#` 注释，`config.json` 继续兼容但不能写注释。
 
 当前代码会读取这些字段：
 
-```json
-{
-  "heroSmsApiKey": "",
-  "heroSmsService": "dr",
-  "heroSmsCountry": 16,
-  "mailBaseUrl": "",
-  "mailAdminPassword": "",
-  "mailSitePassword": "",
-  "mailDomain": "",
-  "proxyHost": "",
-  "proxyPort": 0,
-  "proxyUsername": "",
-  "proxyPassword": "",
-  "cpa_url": "",
-  "cpa_key": "",
-  "oauthClientId": "app_EMoamEEZ73f0CkXaXp7hrann",
-  "oauthRedirectPort": 1455,
-  "tokenOutputDir": "",
-  "tokenOutputDirs": []
-}
+```yaml
+# config.yaml
+heroSmsApiKey: ""
+heroSmsService: dr
+heroSmsCountry: 16
+mailProvider: cloudflare
+mailBaseUrl: ""
+mailAdminPassword: ""
+mailSitePassword: ""
+mailDomain: ""
+
+omrmail:
+  api_base: https://omrmail.startdo.cloud
+  api_key: ""
+  mailbox: all
+  group_id: null
+  alias_mode: prefer_alias
+  acquire_tag_id: 1 # 未使用
+  used_tag_id: 2 # 已使用
+  registered_tag_id: 2
+  abnormal_tag_id: 3 # 异常
+  authenticated_tag_id: 4 # 已认证
+  login_password: ""
+
+proxyHost: ""
+proxyPort: 0
+proxyUsername: ""
+proxyPassword: ""
+cpa_url: ""
+cpa_key: ""
+oauthClientId: app_EMoamEEZ73f0CkXaXp7hrann
+oauthRedirectPort: 1455
+tokenOutputDir: ""
+tokenOutputDirs: []
 ```
 
 完整流程实际会用到的核心字段：
 
 - `heroSmsApiKey`
-- `mailBaseUrl`
-- `mailAdminPassword`
-- `mailDomain`
+- `mailProvider`: 默认 `cloudflare`；可设置为 `omrmail`
+- `mailBaseUrl` / `mailAdminPassword` / `mailDomain`: `cloudflare` 临时邮箱需要
+- `omrmail.api_key`: `omrmail` 需要；通过 `/api/external/accounts` 取邮箱池，通过 `/api/external/emails` 收邮件
+- `omrmail.login_password` 或 `omrmail.session_cookie` + `omrmail.csrf_token`: 可选；配置后会尽量更新 OMRMail 标签
+- OMRMail 标签默认流转：状态标签互斥，每次只保留最新状态；取邮箱后保留 `used_tag_id=2`，流程失败保留 `abnormal_tag_id=3`，token 成功后保留 `authenticated_tag_id=4`
+- `omrmail.registered_tag_id` 保留为兼容旧配置的别名；未配置 `used_tag_id` 时会作为已使用标签 fallback
 - `cpa_url` / `cpa_key`（如需在换到 token 后自动上传 auth JSON）
 
 代码已确认的默认值：
 
 - `heroSmsService`: `dr`
 - `heroSmsCountry`: `16`
+- `mailProvider`: `cloudflare`
 - `oauthClientId`: `app_EMoamEEZ73f0CkXaXp7hrann`
 - `oauthRedirectPort`: `1455`
 - `tokenOutputDir`: 未配置时回退到 `CODEX_DATA_DIR/tokens/`，未设置 `CODEX_DATA_DIR` 时再回退到当前目录下的 `data/tokens/`
@@ -111,7 +129,7 @@ node index.js --phase8
 
 准备：
 
-- 在仓库根目录提供 `config.json`
+- 在仓库根目录提供 `config.json`，或按需把 compose 挂载改成 `config.yaml`
 - 首次运行前创建宿主机目录 `data/`
 
 单次完整流程：
@@ -135,7 +153,7 @@ docker compose run --rm registrar --phase8
 
 容器内约定：
 
-- `config.json` 只读挂载到 `/app/config.json`
+- 默认 `config.json` 只读挂载到 `/app/config.json`
 - `CODEX_DATA_DIR=/app/data`
 - `accounts.json` / `username.json` / `error_account.json` / `tokens/` 都会写到挂载出来的 `data/` 目录
 

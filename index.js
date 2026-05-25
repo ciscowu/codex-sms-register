@@ -23,6 +23,38 @@ const SMS_POLL_INTERVAL = 5000;
 const SMS_MAX_ATTEMPTS = 26; // 26 * 5s = 130s
 const PHASE8_ACCOUNT_DELAY_MS = 60 * 1000;
 
+function createMailProvider() {
+    return new MailProvider({
+        provider: config.mailProvider,
+        baseUrl: config.mailBaseUrl,
+        adminPassword: config.mailAdminPassword,
+        sitePassword: config.mailSitePassword,
+        domain: config.mailDomain,
+        omrmail: config.omrmail,
+    });
+}
+
+function requireMailConfig(context) {
+    if (config.mailProvider === 'omrmail') {
+        if (!config.omrmail?.apiKey) {
+            throw new Error(`${context} requires omrmail.api_key in config.yaml/config.json`);
+        }
+        return;
+    }
+
+    if (!config.mailBaseUrl || !config.mailAdminPassword || !config.mailDomain) {
+        throw new Error(`${context} requires mailBaseUrl / mailAdminPassword / mailDomain in config.yaml/config.json`);
+    }
+}
+
+async function markMailAbnormalIfAvailable(mailProvider, context) {
+    const email = mailProvider?.getEmail?.();
+    if (!email || typeof mailProvider?.markAbnormal !== 'function') return false;
+    const changed = await mailProvider.markAbnormal(email);
+    if (changed) console.warn(`[${context}] OMRMail 邮箱已标记异常: ${email}`);
+    return changed;
+}
+
 function isProxyConnectionError(error) {
     const msg = String(error?.message || '');
     return msg.includes('ERR_PROXY_CONNECTION_FAILED') || msg.includes('ECONNREFUSED') || msg.includes('tunnel') || msg.includes('proxy');
@@ -589,6 +621,7 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
 
     // 1. 创建临时邮箱
     await mailProvider.createAddress(null, userData.fullName);
+    await mailProvider.markClaimed(mailProvider.getEmail());
     console.log(`[阶段2] 邮箱: ${mailProvider.getEmail()}`);
 
     // 2. 第一轮：手机号登录并绑定临时邮箱（不取 token）
@@ -701,12 +734,7 @@ async function runSingleRegistration() {
     console.log('=========================================');
 
     const smsProvider = new SMSProvider(config.heroSmsApiKey);
-    const mailProvider = new MailProvider({
-        baseUrl: config.mailBaseUrl,
-        adminPassword: config.mailAdminPassword,
-        sitePassword: config.mailSitePassword,
-        domain: config.mailDomain,
-    });
+    const mailProvider = createMailProvider();
     const baseProxy = config.proxyHost ? {
         host: config.proxyHost,
         port: config.proxyPort,
@@ -715,6 +743,7 @@ async function runSingleRegistration() {
     } : null;
     let browserService = null;
     let oauthService = null;
+    let tokenCompleted = false;
 
     const createServices = (useProxy) => {
         const proxy = useProxy ? baseProxy : null;
@@ -764,6 +793,8 @@ async function runSingleRegistration() {
             });
 
             const tokenData = await phase3(smsProvider, mailProvider, browserService, oauthService, userData);
+            tokenCompleted = true;
+            await mailProvider.markAuthenticated(tokenData.email);
             updateAccountStatus(account.phone, 'oauth_done');
             console.log('[主程序] Phase2 完成！');
             console.log(`[主程序] Token 已保存，邮箱: ${tokenData.email}`);
@@ -795,6 +826,8 @@ async function runSingleRegistration() {
 
         // 3. 第三阶段：临时邮箱登录并获取 token
         const tokenData = await phase3(smsProvider, mailProvider, browserService, oauthService, userData);
+        tokenCompleted = true;
+        await mailProvider.markAuthenticated(tokenData.email);
 
         updateAccountStatus(smsProvider.getPhone(), 'oauth_done');
         console.log('[主程序] 本次注册流程圆满结束！');
@@ -823,6 +856,7 @@ async function runSingleRegistration() {
 
     } catch (error) {
         console.error('[主程序] 本次任务执行失败:', error.message);
+        if (!tokenCompleted) await markMailAbnormalIfAvailable(mailProvider, '主程序');
         // 打印 axios 响应详情帮助定位 400 等 HTTP 错误
         if (error?.response) {
             console.error(`[主程序] HTTP ${error.response.status}: ${JSON.stringify(error.response.data || '').substring(0, 500)}`);
@@ -843,12 +877,7 @@ async function runPhase8ForEntry(entry, index, total) {
         throw new Error('Phase8 entry is missing email');
     }
 
-    const mailProvider = new MailProvider({
-        baseUrl: config.mailBaseUrl,
-        adminPassword: config.mailAdminPassword,
-        sitePassword: config.mailSitePassword,
-        domain: config.mailDomain,
-    });
+    const mailProvider = createMailProvider();
 
     const baseProxy = config.proxyHost ? {
         host: config.proxyHost,
@@ -875,6 +904,7 @@ async function runPhase8ForEntry(entry, index, total) {
 
     let browserService = null;
     let oauthService = null;
+    let tokenCompleted = false;
 
     const userData = {
         fullName: String(entry?.name || email.split('@')[0] || 'user').trim(),
@@ -920,6 +950,8 @@ async function runPhase8ForEntry(entry, index, total) {
         const tokenData = await oauthService.exchangeTokenAndSave(params.code, email, {
             password: userData.password,
         });
+        tokenCompleted = true;
+        await mailProvider.markAuthenticated(email);
         console.log(`[Phase8] (${index}/${total}) token saved for ${tokenData.email}`);
         return tokenData;
     };
@@ -941,6 +973,10 @@ async function runPhase8ForEntry(entry, index, total) {
             }
             throw error;
         }
+    } catch (error) {
+        const changed = tokenCompleted ? false : await mailProvider.markAbnormal(email);
+        if (changed) console.warn(`[Phase8] (${index}/${total}) OMRMail 邮箱已标记异常: ${email}`);
+        throw error;
     } finally {
         if (browserService) {
             await browserService.close().catch(() => {});
@@ -953,9 +989,7 @@ async function startPhase8() {
 
     assertNotRunningWithXvfb();
 
-    if (!config.mailBaseUrl || !config.mailAdminPassword || !config.mailDomain) {
-        throw new Error('Phase8 requires mailBaseUrl / mailAdminPassword / mailDomain in config.json');
-    }
+    requireMailConfig('Phase8');
 
     const records = getUsernameRecords();
     if (records.length === 0) {
@@ -1019,8 +1053,10 @@ async function startBatch() {
         console.error('[错误] 未配置 heroSmsApiKey');
         process.exit(1);
     }
-    if (!config.mailAdminPassword) {
-        console.error('[错误] 未配置 mailAdminPassword');
+    try {
+        requireMailConfig('Batch registration');
+    } catch (error) {
+        console.error(`[错误] ${error.message}`);
         process.exit(1);
     }
 
