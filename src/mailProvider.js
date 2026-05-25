@@ -213,6 +213,21 @@ class MailProvider {
         console.log(`[Mail] 已复用邮箱会话: ${this.address}`);
     }
 
+    useExistingAddress(address, addressId = null) {
+        const normalized = String(address || '').trim();
+        if (!normalized) {
+            throw new Error('邮箱地址为空，无法复用');
+        }
+        this.address = normalized;
+        this.jwt = null;
+        this.addressId = addressId || null;
+        if (this.omrmailProvider) {
+            this.omrmailProvider.address = this.address;
+            this.omrmailProvider.addressId = this.addressId;
+        }
+        console.log(`[Mail] 已复用邮箱地址: ${this.address}`);
+    }
+
     /**
      * 获取邮箱收件箱 URL（供 Agent 浏览器访问）
      * @returns {string}
@@ -244,6 +259,9 @@ class MailProvider {
     async getMails(limit = 10, offset = 0) {
         if (this.omrmailProvider) {
             return await this.omrmailProvider.getMailsByAddress(this.getEmail(), limit, offset);
+        }
+        if (!this.jwt && this.address) {
+            return await this.getMailsByAddress(this.address, limit, offset);
         }
 
         try {

@@ -554,8 +554,12 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
     console.log('[阶段2] 开始 Codex OAuth（绑定临时邮箱）');
     console.log('=========================================');
 
-    // 1. 创建临时邮箱
-    await mailProvider.createAddress(null, userData.fullName);
+    // 1. 确保已有临时邮箱；--phase2 续跑时可复用 accounts.json 中的邮箱
+    if (mailProvider.getEmail()) {
+        console.log(`[阶段2] 复用邮箱: ${mailProvider.getEmail()}`);
+    } else {
+        await mailProvider.createAddress(null, userData.fullName);
+    }
     await mailProvider.markClaimed(mailProvider.getEmail());
     console.log(`[阶段2] 邮箱: ${mailProvider.getEmail()}`);
 
@@ -698,7 +702,7 @@ async function runSingleRegistration() {
 
     const executeFlow = async () => {
         if (PHASE2_ONLY) {
-            // --phase2 模式：使用已注册的账号跑 Phase 1.5 + Phase 2
+            // --phase2 模式：有已绑定邮箱则直进 Phase 3，否则补 Phase 1.5 + Phase 2
             const account = loadAccount();
             if (!account) {
                 throw new Error('accounts.json 中没有可用账号，请先跑完整流程注册');
@@ -712,20 +716,26 @@ async function runSingleRegistration() {
                 age: new Date().getFullYear() - parseInt(account.birthDate),
             };
 
-            // 先完成首次登录 about-you
-            await phase1_5(smsProvider, browserService, userData);
+            const existingEmail = String(account.email || '').trim();
+            if (existingEmail) {
+                mailProvider.useExistingAddress(existingEmail);
+                console.log(`[主程序] Phase2 模式: 检测到已有邮箱 ${existingEmail}，跳过阶段1.5/阶段2，直接进入阶段3`);
+            } else {
+                // 先完成首次登录 about-you
+                await phase1_5(smsProvider, browserService, userData);
 
-            const phase2Data = await phase2(smsProvider, mailProvider, browserService, oauthService, userData);
-            mailProvider.address = phase2Data.email;
-            updateAccountEmail(account.phone, phase2Data.email);
-            saveUsernameFile({
-                email: phase2Data.email,
-                phone: account.phone,
-                password: account.password,
-                name: account.name,
-                birthDate: account.birthDate,
-                status: 'email_bound',
-            });
+                const phase2Data = await phase2(smsProvider, mailProvider, browserService, oauthService, userData);
+                mailProvider.address = phase2Data.email;
+                updateAccountEmail(account.phone, phase2Data.email);
+                saveUsernameFile({
+                    email: phase2Data.email,
+                    phone: account.phone,
+                    password: account.password,
+                    name: account.name,
+                    birthDate: account.birthDate,
+                    status: 'email_bound',
+                });
+            }
 
             const tokenData = await phase3(smsProvider, mailProvider, browserService, oauthService, userData);
             tokenCompleted = true;
