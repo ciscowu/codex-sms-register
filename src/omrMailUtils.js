@@ -48,6 +48,7 @@ function normalizeOmrMailConfig(raw = {}) {
         authenticatedTagId: toInt(firstValue(raw.authenticatedTagId, raw.authenticated_tag_id), 4),
         top: toInt(firstValue(raw.top), 20),
         requestTimeoutSecs: toInt(firstValue(raw.requestTimeoutSecs, raw.request_timeout_secs), 30),
+        requestRetryDelayMs: toInt(firstValue(raw.requestRetryDelayMs, raw.request_retry_delay_ms), 500),
     };
 }
 

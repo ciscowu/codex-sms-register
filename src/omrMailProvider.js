@@ -2,6 +2,9 @@ const axios = require('axios');
 const { accountTagIds, extractCookieHeader, hasTagInformation, normalizeOmrMailConfig, normalizeOmrMailMessage, omrMailStateTransition, parseMessageTime, primaryMailbox, quotePath } = require('./omrMailUtils');
 
 const ACTIVE_STATUSES = new Set(['active', 'enabled', 'healthy']);
+const RETRYABLE_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EAI_AGAIN']);
+const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_REQUEST_ATTEMPTS = 3;
 
 class OmrMailProvider {
     constructor(options = {}) {
@@ -42,10 +45,33 @@ class OmrMailProvider {
         }
     }
 
+    _isRetryableRequestError(error) {
+        const status = error?.response?.status;
+        return RETRYABLE_ERROR_CODES.has(error?.code) || RETRYABLE_HTTP_STATUSES.has(status);
+    }
+
+    async _sleep(ms) {
+        if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async _requestWithRetry(method, url, ...args) {
+        for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt++) {
+            try {
+                return await axios[method](url, ...args);
+            } catch (error) {
+                if (attempt >= MAX_REQUEST_ATTEMPTS || !this._isRetryableRequestError(error)) throw error;
+                const marker = error?.code || `HTTP ${error?.response?.status}`;
+                console.warn(`[Mail][OMR] 请求失败(${marker})，短暂重试... (${attempt}/${MAX_REQUEST_ATTEMPTS})`);
+                await this._sleep(this.config.requestRetryDelayMs);
+            }
+        }
+        throw new Error('omrmail request retry exhausted');
+    }
+
     async _ensureWebAuth() {
         if (this.config.sessionCookie && this.config.csrfToken) return true;
         if (this.config.sessionCookie && !this.config.csrfToken) {
-            const csrfResponse = await axios.get(
+            const csrfResponse = await this._requestWithRetry('get',
                 `${this.config.apiBase}/api/csrf-token`,
                 this._axiosConfig({ headers: this._webHeaders() })
             );
@@ -56,7 +82,7 @@ class OmrMailProvider {
         }
         if (!this.config.loginPassword) return false;
 
-        const loginResponse = await axios.post(
+        const loginResponse = await this._requestWithRetry('post',
             `${this.config.apiBase}/login`,
             { password: this.config.loginPassword },
             this._axiosConfig({ headers: { 'Content-Type': 'application/json' } })
@@ -119,7 +145,7 @@ class OmrMailProvider {
         this._requireApiKey();
         const params = {};
         if (this.config.groupId !== null) params.group_id = this.config.groupId;
-        const response = await axios.get(
+        const response = await this._requestWithRetry('get',
             `${this.config.apiBase}/api/external/accounts`,
             this._axiosConfig({
                 params,
@@ -183,7 +209,7 @@ class OmrMailProvider {
         const hasAuth = await this._ensureWebAuth().catch(() => false);
         if (!hasAuth) return false;
 
-        await axios.post(
+        await this._requestWithRetry('post',
             `${this.config.apiBase}/api/accounts/tags`,
             {
                 account_ids: [Number.isFinite(Number(identity.id)) ? Number(identity.id) : identity.id],
@@ -237,7 +263,7 @@ class OmrMailProvider {
         const folder = String(message.folder || this.config.mailbox || 'inbox').toLowerCase() === 'all'
             ? 'inbox'
             : (message.folder || this.config.mailbox || 'inbox');
-        const response = await axios.get(
+        const response = await this._requestWithRetry('get',
             `${this.config.apiBase}/api/email/${quotePath(email)}/${quotePath(messageId)}`,
             this._axiosConfig({
                 params: { folder, method: 'graph' },
@@ -257,7 +283,7 @@ class OmrMailProvider {
         const email = String(address || '').trim();
         if (!email) throw new Error('email is empty');
 
-        const response = await axios.get(
+        const response = await this._requestWithRetry('get',
             `${this.config.apiBase}/api/external/emails`,
             this._axiosConfig({
                 params: {

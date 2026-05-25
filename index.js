@@ -5,6 +5,7 @@ const { MailProvider } = require('./src/mailProvider');
 const { BrowserService } = require('./src/browserService');
 const { OAuthService } = require('./src/oauthService');
 const { generateRandomName, generateRandomPassword } = require('./src/randomIdentity');
+const { extractVerificationCodeFromMailRaw, getMailBodyPreview } = require('./src/mailCodeExtractor');
 const config = require('./src/config');
 const { shouldAllowXvfb, shouldBlockXvfbRuntime } = require('./src/runtimeEnvironment');
 
@@ -226,47 +227,13 @@ async function pollEmailCode(mailProvider, maxAttempts = 30, interval = 5000) {
             if (mails.length > 0) {
                 const latest = mails[0];
                 const raw = latest.raw || '';
-
-                // 从 MIME 原始邮件中提取正文（跳过邮件头）
-                // 正文在 Content-Transfer-Encoding 之后的空行后面
-                // 或者在 HTML 内容中查找验证码
-                let body = raw;
-
-                // 尝试提取 HTML/text 正文（在最后一个 boundary 后）
-                const htmlMatch = raw.match(/Content-Type:\s*text\/html[\s\S]*?\r?\n\r?\n([\s\S]*?)(?:--[^\r\n]+--|$)/i);
-                if (htmlMatch) {
-                    body = htmlMatch[1];
-                } else {
-                    // 没有 HTML，取最后一段（通常是正文）
-                    const parts = raw.split(/\r?\n\r?\n/);
-                    if (parts.length > 1) {
-                        body = parts.slice(Math.max(1, parts.length - 3)).join('\n');
-                    }
+                const code = extractVerificationCodeFromMailRaw(raw);
+                if (code) {
+                    console.log(`[Mail] 收到验证码: ${code}`);
+                    return code;
                 }
 
-                // 方法1：找 "code" / "验证码" / "verification" 附近的6位数字
-                const codePatterns = [
-                    /(?:code|验证码|verification|verify)[^\d]{0,30}(\d{6})/i,
-                    /(\d{6})[^\d]{0,30}(?:code|验证码|verification)/i,
-                    />\s*(\d{6})\s*</,  // HTML 标签之间的6位数字
-                ];
-                for (const pattern of codePatterns) {
-                    const match = body.match(pattern);
-                    if (match) {
-                        console.log(`[Mail] 收到验证码: ${match[1]} (pattern: ${pattern.source.substring(0, 30)})`);
-                        return match[1];
-                    }
-                }
-
-                // 方法2：兜底 - 在正文中找任何6位数字（排除明显的非验证码）
-                const allSixDigits = body.match(/\b(\d{6})\b/g) || [];
-                const filtered = allSixDigits.filter(d => !raw.includes(`t=${d}`) && !raw.includes(`x=${d}`));
-                if (filtered.length > 0) {
-                    console.log(`[Mail] 收到验证码 (兜底): ${filtered[0]}`);
-                    return filtered[0];
-                }
-
-                console.log(`[Mail] 邮件已收到但未提取到验证码，正文前200字: ${body.substring(0, 200)}`);
+                console.log(`[Mail] 邮件已收到但未提取到验证码，正文前200字: ${getMailBodyPreview(raw)}`);
             }
         } catch (error) {
             console.error(`[Mail] 查询出错: ${error.message}`);
@@ -276,38 +243,6 @@ async function pollEmailCode(mailProvider, maxAttempts = 30, interval = 5000) {
     }
 
     throw new Error(`邮箱验证码超时（等待 ${(maxAttempts * interval) / 1000} 秒）`);
-}
-
-/**
- * 保存已注册账号到 accounts.json
- */
-function extractVerificationCodeFromMailRaw(raw = '') {
-    if (!raw || typeof raw !== 'string') return null;
-
-    let body = raw;
-    const htmlMatch = raw.match(/Content-Type:\s*text\/html[\s\S]*?\r?\n\r?\n([\s\S]*?)(?:--[^\r\n]+--|$)/i);
-    if (htmlMatch) {
-        body = htmlMatch[1];
-    } else {
-        const parts = raw.split(/\r?\n\r?\n/);
-        if (parts.length > 1) {
-            body = parts.slice(Math.max(1, parts.length - 3)).join('\n');
-        }
-    }
-
-    const codePatterns = [
-        /(?:code|éªŒè¯ç |verification|verify)[^\d]{0,30}(\d{6})/i,
-        /(\d{6})[^\d]{0,30}(?:code|éªŒè¯ç |verification)/i,
-        />\s*(\d{6})\s*</,
-    ];
-    for (const pattern of codePatterns) {
-        const match = body.match(pattern);
-        if (match) return match[1];
-    }
-
-    const allSixDigits = body.match(/\b(\d{6})\b/g) || [];
-    const filtered = allSixDigits.filter(d => !raw.includes(`t=${d}`) && !raw.includes(`x=${d}`));
-    return filtered.length > 0 ? filtered[0] : null;
 }
 
 async function pollEmailCodeByAddress(mailProvider, email, maxAttempts = 30, interval = 5000) {
