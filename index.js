@@ -505,16 +505,18 @@ async function phase1(smsProvider, browserService, userData) {
     console.log('[阶段1] 开始 ChatGPT 手机号注册流程');
     console.log('=========================================');
 
-    // 1. 先导航到注册页面（不花钱，失败了可以直接重试）
-    await browserService.navigateToSignup();
-
-    // 2. 浏览器就绪后，才获取手机号（花钱操作尽量靠后）
-    await smsProvider.getNumber(config.heroSmsService, config.heroSmsCountry, config.heroSmsMaxPrice);
-    await smsProvider.markReady();
-
     let numberUsed = false;
+    let numberAcquired = false;
 
     try {
+        // 1. 先获取手机号并标记为准备接收短信
+        await smsProvider.getNumber(config.heroSmsService, config.heroSmsCountry, config.heroSmsMaxPrice);
+        numberAcquired = true;
+        await smsProvider.markReady();
+
+        // 2. 再打开注册页面
+        await browserService.navigateToSignup();
+
         // 3. 根据 heroSmsCountry 动态选择国家并输入手机号
         const countryInfo = smsProvider.getCountryInfo(config.heroSmsCountry);
         const dialCode = countryInfo ? countryInfo.dial : SMSProvider.extractDialCode(smsProvider.getPhone());
@@ -546,10 +548,10 @@ async function phase1(smsProvider, browserService, userData) {
         return true;
 
     } catch (error) {
-        if (!numberUsed) {
+        if (!numberUsed && numberAcquired) {
             console.error('[阶段1] 流程失败，取消号码退款...');
             await smsProvider.cancel();
-        } else {
+        } else if (numberUsed) {
             await smsProvider.complete().catch(() => {});
         }
         throw error;
