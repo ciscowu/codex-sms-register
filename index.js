@@ -467,19 +467,49 @@ function saveUsernameFile({ email, phone, password, name, birthDate, status }) {
 /**
  * 第一阶段：用手机号注册 ChatGPT
  */
-async function phase1(smsProvider, browserService, userData) {
+function createPhase1PhoneState() {
+    return {
+        acquired: false,
+        ready: false,
+        used: false,
+        settled: false,
+    };
+}
+
+async function acquirePhase1Phone(smsProvider, phoneState) {
+    if (phoneState.acquired && smsProvider.getPhone()) return;
+
+    await smsProvider.getNumber(config.heroSmsService, config.heroSmsCountry, config.heroSmsMaxPrice);
+    phoneState.acquired = true;
+    await smsProvider.markReady();
+    phoneState.ready = true;
+}
+
+async function completePhase1Phone(smsProvider, phoneState) {
+    await smsProvider.complete();
+    phoneState.settled = true;
+}
+
+async function settlePhase1PhoneAfterFailure(smsProvider, phoneState, context) {
+    if (!phoneState.acquired || phoneState.settled) return;
+
+    if (!phoneState.used) {
+        console.error(`[${context}] 流程失败，取消号码退款...`);
+        await smsProvider.cancel();
+    } else {
+        await smsProvider.complete().catch(() => {});
+    }
+    phoneState.settled = true;
+}
+
+async function phase1(smsProvider, browserService, userData, phoneState = createPhase1PhoneState()) {
     console.log('\n=========================================');
     console.log('[阶段1] 开始 ChatGPT 手机号注册流程');
     console.log('=========================================');
 
-    let numberUsed = false;
-    let numberAcquired = false;
-
     try {
-        // 1. 先获取手机号并标记为准备接收短信
-        await smsProvider.getNumber(config.heroSmsService, config.heroSmsCountry, config.heroSmsMaxPrice);
-        numberAcquired = true;
-        await smsProvider.markReady();
+        // 1. 使用启动浏览器前预取的手机号；没有预取时兜底现场获取
+        await acquirePhase1Phone(smsProvider, phoneState);
 
         // 2. 再打开注册页面
         await browserService.navigateToSignup();
@@ -492,7 +522,7 @@ async function phase1(smsProvider, browserService, userData) {
         await browserService.selectCountry(dialCode, countryName, isoCode);
         const localNumber = smsProvider.getPhoneLocal();
         await browserService.enterPhone(localNumber);
-        numberUsed = true;
+        phoneState.used = true;
 
         // 4. 完成注册资料（密码、验证码、姓名、生日等）
         // 当页面需要 SMS 验证码时，通过回调获取
@@ -506,7 +536,7 @@ async function phase1(smsProvider, browserService, userData) {
         });
 
         // 6. 完成 SMS 激活
-        await smsProvider.complete();
+        await completePhase1Phone(smsProvider, phoneState);
 
         // 7. 保存账号信息
         saveAccount(smsProvider.getPhone(), userData.password, userData.fullName, userData.birthDate);
@@ -515,12 +545,7 @@ async function phase1(smsProvider, browserService, userData) {
         return true;
 
     } catch (error) {
-        if (!numberUsed && numberAcquired) {
-            console.error('[阶段1] 流程失败，取消号码退款...');
-            await smsProvider.cancel();
-        } else if (numberUsed) {
-            await smsProvider.complete().catch(() => {});
-        }
+        await settlePhase1PhoneAfterFailure(smsProvider, phoneState, '阶段1');
         throw error;
     }
 }
@@ -683,6 +708,7 @@ async function runSingleRegistration() {
     let browserService = null;
     let oauthService = null;
     let tokenCompleted = false;
+    let normalRegistration = null;
 
     const createServices = (useProxy) => {
         const proxy = useProxy ? baseProxy : null;
@@ -698,6 +724,15 @@ async function runSingleRegistration() {
         } : null;
         const o = new OAuthService({ proxy: oauthProxy });
         return { b, o };
+    };
+
+    const prepareNormalRegistration = async () => {
+        const userData = generateUserData();
+        const phoneState = createPhase1PhoneState();
+        normalRegistration = { userData, phoneState };
+
+        console.log(`[主程序] 用户: ${userData.fullName}, 年龄: ${userData.age}, 生日: ${userData.birthDate}`);
+        await acquirePhase1Phone(smsProvider, phoneState);
     };
 
     const executeFlow = async () => {
@@ -747,11 +782,11 @@ async function runSingleRegistration() {
         }
 
         // 正常模式：Phase 1 + Phase 1.5 + Phase 2
-        const userData = generateUserData();
-        console.log(`[主程序] 用户: ${userData.fullName}, 年龄: ${userData.age}, 生日: ${userData.birthDate}`);
+        if (!normalRegistration) await prepareNormalRegistration();
+        const { userData, phoneState } = normalRegistration;
 
         // 1. 第一阶段：手机号注册
-        await phase1(smsProvider, browserService, userData);
+        await phase1(smsProvider, browserService, userData, phoneState);
 
         // 1.5. 首次登录完成个人资料
         await phase1_5(smsProvider, browserService, userData);
@@ -782,16 +817,20 @@ async function runSingleRegistration() {
 
     try {
         const hasProxy = !!baseProxy;
+        if (!PHASE2_ONLY) await prepareNormalRegistration();
 
         // 优先走配置代理
         ({ b: browserService, o: oauthService } = createServices(hasProxy));
-        await browserService.launch();
         try {
+            await browserService.launch();
             return await executeFlow();
         } catch (error) {
             if (hasProxy && isProxyConnectionError(error)) {
                 console.warn('[主程序] 检测到代理连接失败，自动切换为直连重试本轮任务...');
                 await browserService.close().catch(() => {});
+                if (!PHASE2_ONLY && normalRegistration?.phoneState?.settled) {
+                    await prepareNormalRegistration();
+                }
                 ({ b: browserService, o: oauthService } = createServices(false));
                 await browserService.launch();
                 return await executeFlow();
@@ -801,6 +840,9 @@ async function runSingleRegistration() {
 
     } catch (error) {
         console.error('[主程序] 本次任务执行失败:', error.message);
+        if (!PHASE2_ONLY && normalRegistration) {
+            await settlePhase1PhoneAfterFailure(smsProvider, normalRegistration.phoneState, '主程序');
+        }
         if (!tokenCompleted) await markMailAbnormalIfAvailable(mailProvider, '主程序');
         // 打印 axios 响应详情帮助定位 400 等 HTTP 错误
         if (error?.response) {
@@ -809,7 +851,9 @@ async function runSingleRegistration() {
         }
         throw error;
     } finally {
-        await browserService.close();
+        if (browserService) {
+            await browserService.close().catch(() => {});
+        }
     }
 }
 
