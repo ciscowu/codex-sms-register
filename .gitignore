@@ -16,6 +16,7 @@ node_modules/
 
 # 日志 & 临时文件
 *.log
+screenshots/
 .env
 .env.*
 .history
