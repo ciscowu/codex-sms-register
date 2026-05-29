@@ -7,6 +7,7 @@ services:
       CODEX_DATA_DIR: /app/data
     volumes:
       - ./config.json:/app/config.json:ro
+      - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
       - ./screenshots:/app/screenshots
     command: ["1"]
