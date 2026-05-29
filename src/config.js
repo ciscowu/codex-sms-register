@@ -131,6 +131,16 @@ function parseOptionalInt(value, fallback = null) {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function parseCountryIds(value, fallback = [16]) {
+    const rawList = Array.isArray(value)
+        ? value
+        : String(value ?? '').split(',').map(item => item.trim());
+    const countryIds = rawList
+        .map(item => parseInt(item, 10))
+        .filter(Number.isFinite);
+    return countryIds.length > 0 ? countryIds : fallback;
+}
+
 function buildOmrMailConfig(source) {
     const omrmail = source.omrmail && typeof source.omrmail === 'object' ? source.omrmail : {};
     const mode = String(firstConfigValue(omrmail.mode, source.omrmailMode, source.omrmail_mode) ?? '').trim();
@@ -168,13 +178,16 @@ function buildOmrMailConfig(source) {
     return result;
 }
 
+const heroSmsCountries = parseCountryIds(config.heroSmsCountry);
+
 module.exports = {
     dataDir,
 
     // HeroSMS
     heroSmsApiKey: config.heroSmsApiKey,
     heroSmsService: config.heroSmsService || 'dr',
-    heroSmsCountry: parseInt(config.heroSmsCountry, 10) || 16,
+    heroSmsCountry: heroSmsCountries,
+    heroSmsCountries,
     heroSmsMaxPrice: Number.isFinite(heroSmsMaxPrice) ? heroSmsMaxPrice : 0.015,
 
     // Cloudflare 临时邮箱

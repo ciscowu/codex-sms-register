@@ -61,6 +61,9 @@ const DIAL_CODES_SORTED = Object.values(COUNTRY_MAP)
     .map(c => c.dial)
     .filter((v, i, a) => a.indexOf(v) === i)
     .sort((a, b) => b.length - a.length);
+const DEFAULT_COUNTRIES = [16];
+const DEFAULT_NUMBER_ROUNDS = 3;
+const NUMBER_POLL_INTERVAL_MS = 5000;
 
 function formatHttpError(error) {
     const status = error?.response?.status;
@@ -89,12 +92,43 @@ function formatHttpError(error) {
     return parts.join(' | ');
 }
 
+function normalizeCountryList(country) {
+    const rawList = Array.isArray(country) ? country : [country];
+    const countries = rawList
+        .map(item => parseInt(item, 10))
+        .filter(Number.isFinite);
+    return countries.length > 0 ? countries : DEFAULT_COUNTRIES;
+}
+
+function normalizeNumberOptions(options) {
+    if (typeof options === 'number') {
+        return {
+            maxRounds: Number.isFinite(options) ? Math.max(1, options) : DEFAULT_NUMBER_ROUNDS,
+            intervalMs: NUMBER_POLL_INTERVAL_MS,
+        };
+    }
+
+    return {
+        maxRounds: Math.max(1, parseInt(options?.maxRounds ?? DEFAULT_NUMBER_ROUNDS, 10)),
+        intervalMs: Math.max(0, parseInt(options?.intervalMs ?? NUMBER_POLL_INTERVAL_MS, 10)),
+    };
+}
+
+function isNoNumbersHttpError(error) {
+    const status = error?.response?.status;
+    const data = error?.response?.data || {};
+    const title = String(data.title || '').toUpperCase();
+    const details = String(data.details || '').toLowerCase();
+    return status === 404 && (title.includes('NO_NUMBERS') || details.includes('numbers not found'));
+}
+
 class SMSProvider {
     constructor(apiKey) {
         this.apiKey = apiKey;
         this.baseUrl = 'https://hero-sms.com/stubs/handler_api.php';
         this.activationId = null;
         this.phoneNumber = null;
+        this.countryId = null;
         this.sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     }
 
@@ -115,7 +149,30 @@ class SMSProvider {
      * @returns {{ dial: string, iso: string } | null}
      */
     getCountryInfo(countryId) {
-        return COUNTRY_MAP[countryId] || null;
+        return COUNTRY_MAP[parseInt(countryId, 10)] || null;
+    }
+
+    getCountryInfoByDialCode(dialCode) {
+        const normalized = String(dialCode || '').replace(/^\+/, '');
+        const entry = Object.entries(COUNTRY_MAP).find(([, info]) => info.dial === normalized);
+        return entry ? entry[1] : null;
+    }
+
+    getCountryInfoByPhone(phone) {
+        return this.getCountryInfoByDialCode(SMSProvider.extractDialCode(phone));
+    }
+
+    setCurrentCountryId(countryId) {
+        const parsed = parseInt(countryId, 10);
+        this.countryId = Number.isFinite(parsed) ? parsed : null;
+    }
+
+    getCurrentCountryId() {
+        return this.countryId;
+    }
+
+    getCurrentCountryInfo() {
+        return this.getCountryInfo(this.countryId) || this.getCountryInfoByPhone(this.phoneNumber);
     }
 
     /**
@@ -132,59 +189,77 @@ class SMSProvider {
         return '';
     }
 
+    async requestNumberOnce(service, country, maxPrice) {
+        try {
+            const data = await this.request('getNumberV2', { service, country, maxPrice });
+            if (typeof data !== 'string') return { ok: true, data };
+            if (data === 'NO_BALANCE') throw new Error('HeroSMS 余额不足');
+            if (data === 'BAD_KEY') throw new Error('HeroSMS API Key 无效');
+            if (data === 'NO_NUMBERS') return { ok: false, reason: data, quiet: true };
+            throw new Error(`获取号码失败: ${data}`);
+        } catch (error) {
+            if (!error.response) throw error;
+
+            const errorDetails = formatHttpError(error);
+            if (error.response.status === 422) {
+                throw new Error(`HeroSMS 请求参数无效: ${errorDetails}`);
+            }
+            return {
+                ok: false,
+                reason: errorDetails,
+                quiet: isNoNumbersHttpError(error),
+            };
+        }
+    }
+
+    saveNumberData(data, country) {
+        this.activationId = data.activationId;
+        this.phoneNumber = String(data.phoneNumber);
+        this.setCurrentCountryId(country);
+
+        if (!this.phoneNumber.startsWith('+')) {
+            this.phoneNumber = `+${this.phoneNumber}`;
+        }
+
+        console.log(`[SMS] 获取号码: ${this.phoneNumber} (activation: ${this.activationId}, 费用: $${data.activationCost})`);
+        return { activationId: this.activationId, phoneNumber: this.phoneNumber };
+    }
+
     /**
      * 获取手机号码（V2 接口，返回 JSON）
      * @param {string} service - 服务代码（OpenAI = 'dr'）
-     * @param {number} country - 国家 ID（英国 = 16）
+     * @param {number|number[]} country - 国家 ID 或国家 ID 数组
      * @param {number} maxPrice - 可接受的最高价格
-     * @param {number} maxRetries - 最大重试次数
+     * @param {number|object} options - 数字为兼容旧 maxRetries；对象支持 maxRounds/intervalMs
      * @returns {Promise<{activationId: number, phoneNumber: string}>}
      */
-    async getNumber(service = 'dr', country = 16, maxPrice, maxRetries = 5) {
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            let data;
-            try {
-                data = await this.request('getNumberV2', { service, country, maxPrice });
-            } catch (httpErr) {
-                const errorDetails = formatHttpError(httpErr);
-                console.error(`[SMS] 获取号码请求失败: ${errorDetails}`);
+    async getNumber(service = 'dr', country = DEFAULT_COUNTRIES, maxPrice, options = {}) {
+        const countries = normalizeCountryList(country);
+        const { maxRounds, intervalMs } = normalizeNumberOptions(options);
+        let lastReason = '';
 
-                if (httpErr?.response?.status === 422) {
-                    throw new Error(`HeroSMS 请求参数无效: ${errorDetails}`);
+        this.activationId = null;
+        this.phoneNumber = null;
+        this.countryId = null;
+
+        for (let round = 1; round <= maxRounds; round++) {
+            for (let index = 0; index < countries.length; index++) {
+                const countryId = countries[index];
+                const result = await this.requestNumberOnce(service, countryId, maxPrice);
+                if (result.ok) return this.saveNumberData(result.data, countryId);
+
+                lastReason = result.reason;
+                if (!result.quiet) {
+                    console.warn(`[SMS] 国家 ${countryId} 获取号码失败: ${result.reason}`);
                 }
 
-                console.log(`[SMS] API 请求失败: ${errorDetails}，${attempt < maxRetries ? '5秒后重试...' : '已达最大重试次数'} (${attempt}/${maxRetries})`);
-                if (attempt < maxRetries) {
-                    await new Promise(r => setTimeout(r, 5000));
-                    continue;
-                }
-                throw new Error(`HeroSMS API 不可用: ${errorDetails}`);
+                const isFinalAttempt = round === maxRounds && index === countries.length - 1;
+                if (!isFinalAttempt) await this.sleep(intervalMs);
             }
-
-            if (typeof data === 'string') {
-                if (data === 'NO_BALANCE') throw new Error('HeroSMS 余额不足');
-                if (data === 'BAD_KEY') throw new Error('HeroSMS API Key 无效');
-                if (data === 'NO_NUMBERS') {
-                    console.log(`[SMS] 暂无可用号码，${attempt < maxRetries ? '3秒后重试...' : '已达最大重试次数'} (${attempt}/${maxRetries})`);
-                    if (attempt < maxRetries) {
-                        await new Promise(r => setTimeout(r, 3000));
-                        continue;
-                    }
-                    throw new Error('当前无可用号码（重试耗尽）');
-                }
-                throw new Error(`获取号码失败: ${data}`);
-            }
-
-            this.activationId = data.activationId;
-            this.phoneNumber = String(data.phoneNumber);
-
-            if (!this.phoneNumber.startsWith('+')) {
-                this.phoneNumber = `+${this.phoneNumber}`;
-            }
-
-            console.log(`[SMS] 获取号码: ${this.phoneNumber} (activation: ${this.activationId}, 费用: $${data.activationCost})`);
-            return { activationId: this.activationId, phoneNumber: this.phoneNumber };
+            console.log(`[SMS] 第 ${round}/${maxRounds} 轮未获取到号码`);
         }
+
+        throw new Error(`当前无可用号码（已轮询 ${countries.length} 个国家 x ${maxRounds} 轮，最后错误: ${lastReason || 'NO_NUMBERS'}）`);
     }
 
     /**

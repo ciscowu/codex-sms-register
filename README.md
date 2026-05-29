@@ -38,7 +38,10 @@
 # config.yaml
 heroSmsApiKey: ""
 heroSmsService: dr
-heroSmsCountry: 16
+heroSmsCountry:
+  - 16
+  - 73
+  - 22
 mailProvider: cloudflare
 mailBaseUrl: ""
 mailAdminPassword: ""
@@ -84,7 +87,7 @@ tokenOutputDirs: []
 代码已确认的默认值：
 
 - `heroSmsService`: `dr`
-- `heroSmsCountry`: `16`
+- `heroSmsCountry`: HeroSMS 国家 ID 数组，推荐用 YAML 列表写法；程序按顺序轮询，最多 3 轮
 - `mailProvider`: `cloudflare`
 - `oauthClientId`: `app_EMoamEEZ73f0CkXaXp7hrann`
 - `oauthRedirectPort`: `1455`

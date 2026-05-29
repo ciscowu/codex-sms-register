@@ -10,6 +10,7 @@ const {
 } = require('./browserPreferences');
 
 const SLEEP = (ms) => new Promise(r => setTimeout(r, ms));
+const SIGNUP_MODAL_TIMEOUT_MS = 45000;
 
 class BrowserService {
     constructor(proxy, browserOptions = {}) {
@@ -328,7 +329,7 @@ class BrowserService {
 
         // 等待弹窗出现（"登录或注册" 标题）
         console.log('[Browser] 等待注册弹窗...');
-        await this.waitForTextOnPage(UI_TEXT.loginOrSignup, 15000);
+        await this.waitForTextOnPage(UI_TEXT.loginOrSignup, SIGNUP_MODAL_TIMEOUT_MS);
         await SLEEP(1000);
 
         console.log('[Browser] 点击「继续使用手机登录」...');

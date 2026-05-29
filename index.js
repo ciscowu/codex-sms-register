@@ -302,20 +302,30 @@ function calcAgeFromBirthDate(birthDate) {
     return Math.max(18, new Date().getFullYear() - year);
 }
 
+function getActiveSmsCountryInfo(smsProvider) {
+    return smsProvider.getCurrentCountryInfo?.()
+        || smsProvider.getCountryInfoByPhone?.(smsProvider.getPhone())
+        || null;
+}
+
 function getUsernameRecords() {
     return readJsonArray(USERNAME_FILE);
 }
 
-function saveAccount(phone, password, name, birthDate) {
+function saveAccount(phone, password, name, birthDate, countryId = null) {
     let accounts = [];
     if (fs.existsSync(ACCOUNTS_FILE)) {
         try { accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8')); } catch (e) {}
     }
-    accounts.push({
+    const accountData = {
         phone, password, name, birthDate,
         createdAt: new Date().toISOString(),
         status: 'registered',
-    });
+    };
+    if (Number.isFinite(parseInt(countryId, 10))) {
+        accountData.countryId = parseInt(countryId, 10);
+    }
+    accounts.push(accountData);
     ensureParentDir(ACCOUNTS_FILE);
     fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
     console.log(`[账号] 已保存到 ${ACCOUNTS_FILE} (共 ${accounts.length} 个)`);
@@ -514,8 +524,8 @@ async function phase1(smsProvider, browserService, userData, phoneState = create
         // 2. 再打开注册页面
         await browserService.navigateToSignup();
 
-        // 3. 根据 heroSmsCountry 动态选择国家并输入手机号
-        const countryInfo = smsProvider.getCountryInfo(config.heroSmsCountry);
+        // 3. 根据实际拿到的号码国家动态选择国家并输入手机号
+        const countryInfo = getActiveSmsCountryInfo(smsProvider);
         const dialCode = countryInfo ? countryInfo.dial : SMSProvider.extractDialCode(smsProvider.getPhone());
         const isoCode = countryInfo ? countryInfo.iso : '';
         const countryName = countryInfo ? '' : '';
@@ -539,7 +549,13 @@ async function phase1(smsProvider, browserService, userData, phoneState = create
         await completePhase1Phone(smsProvider, phoneState);
 
         // 7. 保存账号信息
-        saveAccount(smsProvider.getPhone(), userData.password, userData.fullName, userData.birthDate);
+        saveAccount(
+            smsProvider.getPhone(),
+            userData.password,
+            userData.fullName,
+            userData.birthDate,
+            smsProvider.getCurrentCountryId?.()
+        );
 
         console.log('[阶段1] ChatGPT 注册流程完成！');
         return true;
@@ -558,7 +574,7 @@ async function phase1_5(smsProvider, browserService, userData) {
     console.log('[阶段1.5] 首次登录 chatgpt.com 完成个人资料');
     console.log('=========================================');
 
-    const countryInfo1_5 = smsProvider.getCountryInfo(config.heroSmsCountry);
+    const countryInfo1_5 = getActiveSmsCountryInfo(smsProvider);
     await browserService.loginAndCompleteProfile({
         phone: smsProvider.getPhone(),
         password: userData.password,
@@ -595,7 +611,7 @@ async function phase2(smsProvider, mailProvider, browserService, oauthService, u
 
     // 3. 导航到 OAuth 页面并完成邮箱绑定
     await browserService.navigateToOAuth(bindEmailAuthUrl);
-    const countryInfo2 = smsProvider.getCountryInfo(config.heroSmsCountry);
+    const countryInfo2 = getActiveSmsCountryInfo(smsProvider);
     await browserService.oauthLoginAndAuthorize({
         loginMethod: 'phone',
         stopAfterEmailBound: true,
@@ -647,7 +663,7 @@ async function phase3(smsProvider, mailProvider, browserService, oauthService, u
     await browserService.navigateToOAuth(authUrl);
 
     // 一站式登录 + 授权（邮箱登录）
-    const countryInfo3 = smsProvider.getCountryInfo(config.heroSmsCountry);
+    const countryInfo3 = getActiveSmsCountryInfo(smsProvider);
     const callbackUrl = await browserService.oauthLoginAndAuthorize({
         loginMethod: 'email',
         phone: smsProvider.getPhone(),
@@ -744,6 +760,7 @@ async function runSingleRegistration() {
             }
             console.log(`[主程序] Phase2 模式: 使用账号 ${account.phone} (${account.name})`);
             smsProvider.phoneNumber = account.phone;
+            smsProvider.setCurrentCountryId?.(account.countryId);
             const userData = {
                 fullName: account.name,
                 password: account.password,
