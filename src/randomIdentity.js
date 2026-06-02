@@ -1,6 +1,6 @@
 const { randomInt } = require('node:crypto');
 
-const alternateFirstNames = [
+const firstNames = [
     // --- 赛博朋克与科幻未来风格 ---
     'Vector', 'Cipher', 'Helix', 'Nova', 'Apex', 'Zenith', 'Orion', 'Ember', 'Proxy', 'Echo',
     'Glitch', 'Matrix', 'Voxel', 'Rune', 'Solas', 'Aero', 'Kaelen', 'Zephyr', 'Rift', 'Axiom',
@@ -37,7 +37,7 @@ const alternateFirstNames = [
     'Amelie', 'Chloe', 'Elise', 'Fleur', 'Ines', 'Leonore', 'Margot', 'Noemi', 'Odette', 'Sylvie'
 ];
 
-const alternateLastNames = [
+const lastNames = [
     // --- 经典英伦与盎格鲁-撒克逊（沉稳、职业起源） ---
     'Blackwood', 'Hawthorne', 'Sterling', 'Kingsley', 'Pendleton', 'Gallowglass', 'Abernathy', 'Winslow', 'Davenport', 'Harrington',
     'Fairchild', 'Pemberton', 'Redmond', 'Stonemason', 'Bancroft', 'Garrison', 'Kendall', 'Lockwood', 'Sinclair', 'Thorne',
