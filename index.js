@@ -13,6 +13,7 @@ const { shouldAllowXvfb, shouldBlockXvfbRuntime } = require('./src/runtimeEnviro
 const args = process.argv.slice(2);
 const PHASE2_ONLY = args.includes('--phase2');
 const PHASE8_ONLY = args.includes('--phase8');
+const PHONE_ONLY = args.includes('--phone-only');
 const TARGET_COUNT = parseInt(args.find(a => /^\d+$/.test(a)) || '1', 10);
 const DATA_DIR = config.dataDir || process.cwd();
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
@@ -798,6 +799,22 @@ async function runSingleRegistration() {
             return true;
         }
 
+        // 仅手机号模式：Phase 1 + Phase 1.5
+        if (PHONE_ONLY) {
+            if (!normalRegistration) await prepareNormalRegistration();
+            const { userData, phoneState } = normalRegistration;
+
+            // 1. 第一阶段：手机号注册
+            await phase1(smsProvider, browserService, userData, phoneState);
+
+            // 1.5. 首次登录完成个人资料
+            await phase1_5(smsProvider, browserService, userData);
+
+            updateAccountStatus(smsProvider.getPhone(), 'phone_only_done');
+            console.log('[主程序] 仅手机号注册流程完成！');
+            return true;
+        }
+
         // 正常模式：Phase 1 + Phase 1.5 + Phase 2
         if (!normalRegistration) await prepareNormalRegistration();
         const { userData, phoneState } = normalRegistration;
@@ -1051,7 +1068,8 @@ function archiveExistingTokens() {
  * 启动批量注册
  */
 async function startBatch() {
-    console.log(`[启动] Codex 远程注册机（手机号 + Puppeteer 模式），目标: ${TARGET_COUNT}`);
+    const mode = PHONE_ONLY ? '仅手机号注册' : '手机号 + Puppeteer 模式';
+    console.log(`[启动] Codex 远程注册机（${mode}），目标: ${TARGET_COUNT}`);
 
     assertNotRunningWithXvfb();
 
@@ -1059,27 +1077,46 @@ async function startBatch() {
         console.error('[错误] 未配置 heroSmsApiKey');
         process.exit(1);
     }
-    try {
-        requireMailConfig('Batch registration');
-    } catch (error) {
-        console.error(`[错误] ${error.message}`);
-        process.exit(1);
+
+    // 仅手机号模式不需要邮箱配置
+    if (!PHONE_ONLY) {
+        try {
+            requireMailConfig('Batch registration');
+        } catch (error) {
+            console.error(`[错误] ${error.message}`);
+            process.exit(1);
+        }
     }
 
-    archiveExistingTokens();
+    if (!PHONE_ONLY) {
+        archiveExistingTokens();
+    }
+
+    let successCount = 0;
+    let failCount = 0;
 
     while (true) {
-        const currentCount = await checkTokenCount();
-        if (currentCount >= TARGET_COUNT) {
-            console.log(`\n[完成] Token 数量 (${currentCount}) 已达目标 (${TARGET_COUNT})。`);
-            break;
+        if (PHONE_ONLY) {
+            // 仅手机号模式按成功次数计数
+            if (successCount >= TARGET_COUNT) {
+                console.log(`\n[完成] 已成功注册 ${successCount} 个账号（目标: ${TARGET_COUNT}）。`);
+                break;
+            }
+            console.log(`\n[进度] 成功 ${successCount} / ${TARGET_COUNT}，失败 ${failCount}`);
+        } else {
+            const currentCount = await checkTokenCount();
+            if (currentCount >= TARGET_COUNT) {
+                console.log(`\n[完成] Token 数量 (${currentCount}) 已达目标 (${TARGET_COUNT})。`);
+                break;
+            }
+            console.log(`\n[进度] ${currentCount} / ${TARGET_COUNT}`);
         }
-
-        console.log(`\n[进度] ${currentCount} / ${TARGET_COUNT}`);
 
         try {
             await runSingleRegistration();
+            successCount++;
         } catch (error) {
+            failCount++;
             console.error('[主程序] 注册失败，30 秒后重试...');
             await new Promise(r => setTimeout(r, 30000));
         }

@@ -128,6 +128,21 @@ node index.js --phase2
 node index.js --phase8
 ```
 
+`--phone-only` 模式：
+
+- 仅执行手机号注册（Phase 1 + Phase 1.5）
+- 不绑定邮箱，不获取 token
+- 账号状态标记为 `phone_only_done`
+- 适合只需要手机号注册、后续手动处理的场景
+
+```bash
+# 单次
+node index.js --phone-only 1
+
+# 批量注册 5 个
+node index.js --phone-only 5
+```
+
 ## Docker 运行
 
 准备：
