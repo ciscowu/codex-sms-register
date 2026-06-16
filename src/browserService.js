@@ -360,7 +360,7 @@ class BrowserService {
         // 检查是否已经显示了正确的国家（按钮式或 select 式）
         const alreadyCorrect = await this.page.evaluate((code) => {
             // 检查按钮
-            for (const b of document.querySelectorAll('button')) {
+            for (const b of document.querySelectorAll('button, [role="button"]')) {
                 const text = b.innerText.trim();
                 if (text.includes(`+${code}`) || text.includes(`(${code})`)) {
                     return text;
@@ -384,7 +384,7 @@ class BrowserService {
 
         // 检测页面类型：React Aria Select（按钮 + 隐藏 select）vs 标准 select
         const pageType = await this.page.evaluate(() => {
-            const hasCountryButton = Array.from(document.querySelectorAll('button')).some(
+            const hasCountryButton = Array.from(document.querySelectorAll('button, [role="button"]')).some(
                 b => b.getAttribute('aria-haspopup') === 'listbox' && /\+\d/.test(b.innerText)
             );
             const hasSelect = !!document.querySelector('select');
@@ -419,7 +419,7 @@ class BrowserService {
                     nativeSetter.call(select, iso);
                     select.dispatchEvent(new Event('change', { bubbles: true }));
                     // 验证按钮是否更新
-                    for (const b of document.querySelectorAll('button')) {
+                    for (const b of document.querySelectorAll('button, [role="button"]')) {
                         if (b.getAttribute('aria-haspopup') === 'listbox') return b.innerText.trim();
                     }
                     return 'changed';
@@ -438,7 +438,7 @@ class BrowserService {
 
             // 找到并点击国家按钮
             const btnBox = await this.page.evaluate(() => {
-                for (const b of document.querySelectorAll('button')) {
+                for (const b of document.querySelectorAll('button, [role="button"]')) {
                     if (b.getAttribute('aria-haspopup') === 'listbox' && /\+\d/.test(b.innerText)) {
                         const rect = b.getBoundingClientRect();
                         return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
@@ -738,7 +738,7 @@ class BrowserService {
                 await this.screenshot(`completeProfile-ai-error-round${round}.png`);
                 // 尝试点击重试按钮
                 const retried = await this.page.evaluate(() => {
-                    for (const b of document.querySelectorAll('button')) {
+                    for (const b of document.querySelectorAll('button, [role="button"]')) {
                         const t = b.innerText.trim();
                         if (['重试', 'Retry', '再试一次', 'Try again'].some(k => t.includes(k))) {
                             b.click();
@@ -943,22 +943,37 @@ class BrowserService {
         });
         await this.waitForCloudflare();
 
-        // 2. 等待页面渲染，检查是否已登录
-        console.log('[Phase1.5] 等待页面渲染...');
-        await SLEEP(5000);
+        // 2. 等待页面渲染，稳定判定登录状态
+        // 注意：不能用「找不到登录按钮」反推已登录——页面未渲染完、
+        // Cloudflare 拦截、错误页、按钮文案/选择器不符都会导致找不到按钮，
+        // 从而把「未登录」误判为「已登录」并错误跳过整个登录流程。
+        // 正确做法：默认未登录，只有正向看到「已登录主页特征」才跳过。
+        console.log('[Phase1.5] 等待页面渲染，判定登录状态...');
 
-        // 检查是否已登录（没有「登录」按钮说明已登录）
-        const hasLoginBtn = await this.page.evaluate(() => {
-            for (const b of document.querySelectorAll('button, a')) {
-                const text = b.innerText.trim();
-                if (['登录', 'Log in'].includes(text)) return true;
-            }
-            return false;
-        });
+        const detectDeadline = Date.now() + 15000;
+        let isLoggedIn = false;
+        while (Date.now() < detectDeadline) {
+            const result = await this.page.evaluate(() => {
+                // 已登录主页独有特征：消息输入框（未登录页不会有）
+                if (document.querySelector('#prompt-textarea')) return 'logged-in';
+                const text = (document.body?.innerText || '');
+                if (/send a message|给 chatgpt 发消息/i.test(text)) return 'logged-in';
+                // 明确出现登录/注册入口 → 一定未登录
+                if (/登录或注册|log in or sign up/i.test(text)) return 'logged-out';
+                return 'unknown'; // 页面仍在渲染或被 CF 拦截，继续等
+            });
+            if (result === 'logged-in') { isLoggedIn = true; break; }
+            if (result === 'logged-out') { isLoggedIn = false; break; }
+            await SLEEP(1500);
+        }
 
-        if (!hasLoginBtn) {
+        if (isLoggedIn) {
             console.log('[Phase1.5] 已处于登录状态，跳过');
             return true;
+        }
+        // 超时仍无法确认已登录 → 保守按「未登录」处理，继续登录流程
+        if (Date.now() >= detectDeadline) {
+            console.log('[Phase1.5] 无法确认登录状态（页面未完全渲染或被拦截），继续尝试登录流程');
         }
 
         console.log('[Phase1.5] 点击「登录」...');
@@ -991,7 +1006,9 @@ class BrowserService {
                     })),
                     text: (document.body.innerText || '').substring(0, 800),
                     url: location.href,
-                    btns: Array.from(document.querySelectorAll('button')).map(b => b.innerText.trim()).filter(t => t),
+                    btns: Array.from(document.querySelectorAll('button, [role="button"]')).map(b => b.innerText.trim()).filter(t => t),
+                    // 主页独有特征：消息输入框（未登录/中间页都不会有）
+                    composer: !!document.querySelector('#prompt-textarea'),
                 }));
             } catch (e) {
                 console.log(`[Phase1.5] Round ${round}: 页面上下文变化，等待...`);
@@ -1013,10 +1030,12 @@ class BrowserService {
                     lastHandledUrl = url;
                     continue;
                 }
-                const isMainPage = !includesAnyText(pageState.text, UI_TEXT.loginOrSignup)
-                    && !pageState.text.includes('确认一下你的年龄')
-                    && !pageState.text.includes('about-you');
-                if (isMainPage) {
+                // 正向判定：只有出现主页独有特征（消息输入框）才算真正登录完成。
+                // 不再用「没有登录注册文案」反向推断——过渡页/loading/CF 拦截页/弹窗
+                // 都可能不含那些文案，加上 text 只截取前 800 字，极易误判主页。
+                const reachedMain = pageState.composer
+                    || /send a message|给 chatgpt 发消息/i.test(pageState.text);
+                if (reachedMain) {
                     console.log('[Phase1.5] 已到达 ChatGPT 主页，登录完成！');
                     return true;
                 }
@@ -1177,7 +1196,7 @@ class BrowserService {
                 url = this.page.url();
                 pageInfo = await this.page.evaluate(() => ({
                     text: (document.body?.innerText || '').substring(0, 500),
-                    btns: Array.from(document.querySelectorAll('button')).map(b => b.innerText.trim()).filter(t => t),
+                    btns: Array.from(document.querySelectorAll('button, [role="button"]')).map(b => b.innerText.trim()).filter(t => t),
                     inputs: Array.from(document.querySelectorAll('input:not([type="hidden"])')).map(i => ({
                         type: i.type, name: i.name, placeholder: i.placeholder,
                     })),
@@ -1296,7 +1315,7 @@ class BrowserService {
                 console.log('[OAuth] consent 页面: 点击同意按钮...');
                 const clicked = await this.page.evaluate(() => {
                     const skipWords = ['Google', 'Apple', 'Microsoft', 'email', 'phone', '邮件', '邮箱', '手机'];
-                    for (const b of document.querySelectorAll('button')) {
+                    for (const b of document.querySelectorAll('button, [role="button"]')) {
                         const text = b.innerText.trim();
                         if (!text || text.length > 15) continue;
                         if (skipWords.some(w => text.toLowerCase().includes(w.toLowerCase()))) continue;
@@ -1356,7 +1375,7 @@ class BrowserService {
                 console.log('[OAuth] 检测到账户选择页，点击账户继续...');
                 // 点击包含电话号码的按钮（即账户条目）
                 const clicked = await this.page.evaluate((dialCode) => {
-                    for (const btn of document.querySelectorAll('button')) {
+                    for (const btn of document.querySelectorAll('button, [role="button"]')) {
                         const text = btn.innerText || '';
                         if (/\+\d/.test(text) && text.includes(dialCode)) {
                             btn.click();
@@ -1364,7 +1383,7 @@ class BrowserService {
                         }
                     }
                     // 备用：点击第一个包含 + 号的按钮
-                    for (const btn of document.querySelectorAll('button')) {
+                    for (const btn of document.querySelectorAll('button, [role="button"]')) {
                         const text = btn.innerText || '';
                         if (/\+\d/.test(text)) {
                             btn.click();
@@ -1671,7 +1690,7 @@ class BrowserService {
             // 5. 授权确认页 - 点击授权/允许按钮（精确匹配，避免 Google/Apple 等）
             const safeClick = await this.page.evaluate(() => {
                 const skipWords = ['Google', 'Apple', 'Microsoft', '邮件', '邮箱', '手机', 'email', 'phone'];
-                for (const b of document.querySelectorAll('button')) {
+                for (const b of document.querySelectorAll('button, [role="button"]')) {
                     const text = b.innerText.trim();
                     if (!text) continue;
                     // 只点击短文本按钮（授权/允许/继续），排除包含第三方登录关键词的
